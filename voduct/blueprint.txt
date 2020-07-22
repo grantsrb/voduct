@@ -1,8 +1,0 @@
-General Idea: use transformer encoder and decoder system to translate a sequence into some semantic space. Then to combine this sequence of semantics into a single vector that could pheasibly stand alone. It would be ideal to train this literally on the dictionary. So that all words can be partially built up by their definitions. Idealy we would start with a set of words that will serve as foundational pillars to the space. Then the other words could be built off of these core words. Once a word is defined, it can be further tuned every time it is used elsewhere. Or, the embeddings can be initialized for all words and then the dictionary definitions would be trained to either match the embeddings, or the embeddings would be trained to match the definition combinations. They can simultaneously pull each other into place. The trick will be getting this to work with variable sequence lengths. This is where the convolutions come in. The convolutions can be done recursively until the sequence is reduced to a single vector.
-
-Convolutions:
-    Multiple filters with varying kernel sizes followed by a 1d filter to collapse back down to the embedding size.
-
-    filter_dim: n_filters X k_size X embedding_size
-        We can have multiple filters for each k_size as long as the padding is sufficient for all outputs to line up.
-        Try with 3 5 and 7
