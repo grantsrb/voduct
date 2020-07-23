@@ -73,6 +73,7 @@ def train(hyps, verbose=True):
         hyps['n_epochs'] = 2
     epoch = -1
     alpha = hyps['loss_alpha']
+    print()
     while epoch < hyps['n_epochs']:
         epoch += 1
         print("Epoch:{} | Model:{}".format(epoch,hyps['save_folder']))

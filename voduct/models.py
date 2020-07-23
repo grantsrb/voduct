@@ -52,6 +52,7 @@ class TransformerBase(nn.Module):
                                          expand_drop_p=0,
                                          n_filts=10,
                                          ordered_preds=False,
+                                         gen_decs=False,
                                          **kwargs):
         """
         seq_len: int or None
@@ -103,6 +104,11 @@ class TransformerBase(nn.Module):
             if true, the decoder will mask the predicted sequence so
             that the attention modules will not see the tokens ahead
             located further along in the sequence.
+        gen_decs: bool
+            if true, decodings are generated individually and used
+            as the inputs for later decodings. (stands for generate
+            decodings). This ensures earlier attention values are
+            completely unaffected by later inputs.
         """
         super().__init__()
 
@@ -128,6 +134,7 @@ class TransformerBase(nn.Module):
         self.dec_drop_p = dec_drop_p
         self.n_filts = n_filts
         self.ordered_preds = ordered_preds
+        self.gen_decs = gen_decs
 
 class Transformer(TransformerBase):
     def __init__(self, *args, **kwargs):
@@ -150,7 +157,8 @@ class Transformer(TransformerBase):
                                             self.dec_layers,
                                             n_heads=self.n_heads,
                                             act_fxn=self.act_fxn,
-                                            use_mask=self.ordered_preds)
+                                            use_mask=self.ordered_preds,
+                                            gen_decs=self.gen_decs)
 
         self.classifier = Classifier(self.emb_size,
                                      self.n_vocab,
@@ -279,21 +287,14 @@ class MultiHeadAttention(nn.Module):
             f = f + zeros.masked_fill(mask==0,-1e9)
         ps = F.softmax(f,dim=-1) # (B,H,Sq,Sk) ps along Sk
         attns = torch.matmul(ps,fv) # (B,H,Sq,A)
-        #if mask is not None:
-        #    print("Probs:")
-        #    for i in range(ps.shape[1]):
-        #        plt.imshow(ps[0,i].cpu().detach().numpy())
-        #        plt.show()
         attns = attns.permute(0,2,1,3) # (B,Sq,H,A)
         attns = attns.reshape(batch,seq_q,-1)
         return self.outs(attns)
 
 class EncodingBlock(nn.Module):
-    def __init__(self, seq_len, emb_size, attn_size, n_heads=8,
-                                                     act_fxn="ReLU"):
+    def __init__(self, emb_size, attn_size, n_heads=8,
+                                            act_fxn="ReLU"):
         """
-        seq_len: int
-            the length of the sequences to be analyzed
         emb_size: int
             the size of the embeddings
         attn_size: int
@@ -305,7 +306,6 @@ class EncodingBlock(nn.Module):
             MLP
         """
         super().__init__()
-        self.seq_len = seq_len
         self.emb_size = emb_size
         self.attn_size = attn_size
         self.n_heads = n_heads
@@ -364,16 +364,17 @@ class Encoder(nn.Module):
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.act_fxn = act_fxn
+        self.use_mask = use_mask
 
         self.pos_encoding = PositionalEncoder(seq_len, emb_size)
-        mask = self.get_mask(seq_len) if use_mask else None
+        mask = self.get_mask(x.shape[1]) if self.use_mask else None
         self.register_buffer("mask",mask)
         self.enc_layers = nn.ModuleList([])
         for _ in range(n_layers):
-            block = EncodingBlock(seq_len=seq_len, emb_size=emb_size,
-                                                   attn_size=attn_size,
-                                                   n_heads=n_heads,
-                                                   act_fxn=act_fxn)
+            block = EncodingBlock(emb_size=emb_size,
+                                  attn_size=attn_size,
+                                  n_heads=n_heads,
+                                  act_fxn=act_fxn)
             self.enc_layers.append(block)
 
     def forward(self,x,ret_all=False):
@@ -383,10 +384,14 @@ class Encoder(nn.Module):
         ret_all: bool
             if true, will return all intermediate encodings as a list
         """
+        if x.shape[1] != self.seq_len:
+            mask = self.get_mask(x.shape[1])
+        else:
+            mask = self.mask
         fx = self.pos_encoding(x)
         intrmds = []
         for enc in self.enc_layers:
-            fx = enc(fx,mask=self.mask)
+            fx = enc(fx,mask=mask)
             intrmds.append(fx)
         if ret_all:
             return intrmds
@@ -397,11 +402,9 @@ class Encoder(nn.Module):
         return torch.FloatTensor(tri)
 
 class DecodingBlock(nn.Module):
-    def __init__(self, seq_len, emb_size, attn_size, n_heads=8,
+    def __init__(self, emb_size, attn_size, n_heads=8,
                                                      act_fxn="ReLU"):
         """
-        seq_len: int
-            the length of the sequences to be analyzed
         emb_size: int
             the size of the embeddings
         attn_size: int
@@ -413,7 +416,6 @@ class DecodingBlock(nn.Module):
             MLP
         """
         super().__init__()
-        self.seq_len = seq_len
         self.emb_size = emb_size
         self.attn_size = attn_size
 
@@ -453,7 +455,8 @@ class Decoder(nn.Module):
     def __init__(self, seq_len, emb_size, attn_size, n_layers,
                                                      n_heads,
                                                      use_mask=False,
-                                                     act_fxn="ReLU"):
+                                                     act_fxn="ReLU",
+                                                     gen_decs=False):
         """
         seq_len: int
             the length of the sequences to be analyzed
@@ -465,6 +468,15 @@ class Decoder(nn.Module):
             the number of encoding layers
         n_heads: int
             the number of attention heads
+        use_mask: bool
+            if true, a no-peak mask is applied so that elements later
+            in the decoding sequence are hidden from elements earlier
+            in the decoding
+        gen_decs: bool
+            if true, decodings are generated individually and used
+            as the inputs for later decodings. (stands for generate
+            decodings). This ensures earlier attention values are
+            completely unaffected by later inputs.
         """
         super().__init__()
         self.seq_len = seq_len
@@ -473,6 +485,8 @@ class Decoder(nn.Module):
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.act_fxn = act_fxn
+        self.use_mask = use_mask
+        self.gen_decs = gen_decs
 
         mask = self.get_mask(seq_len,bidirectional=False) if use_mask\
                                                             else None
@@ -480,8 +494,9 @@ class Decoder(nn.Module):
         self.pos_encoding = PositionalEncoder(seq_len, emb_size)
         self.dec_layers = nn.ModuleList([])
         for _ in range(n_layers):
-            block = DecodingBlock(seq_len=seq_len, emb_size=emb_size,
-                                  attn_size=attn_size,n_heads=n_heads,
+            block = DecodingBlock(emb_size=emb_size,
+                                  attn_size=attn_size,
+                                  n_heads=n_heads,
                                   act_fxn=act_fxn)
             self.dec_layers.append(block)
 
@@ -494,14 +509,40 @@ class Decoder(nn.Module):
         ret_all: bool
             if true, returns all intermediate decodings
         """
-        fx = self.pos_encoding(x)
-        intrmds = []
-        # TODO: figure out how to evaluate sequentially
-        for dec in self.dec_layers:
-            fx = dec(fx,encs,dec_mask=self.mask)
-            intrmds.append(fx)
-        if ret_all:
-            return intrmds
+        if self.gen_decs:
+            return self.gen_dec_fwd(x,encs,ret_all)
+        else:
+            if x.shape[1] != self.seq_len:
+                mask = self.get_mask(x.shape[1])
+            else:
+                mask = self.mask
+            fx = self.pos_encoding(x)
+            intrmds = []
+            for dec in self.dec_layers:
+                fx = dec(fx,encs,dec_mask=self.mask)
+                intrmds.append(fx)
+            if ret_all:
+                return intrmds
+            return fx
+
+    def gen_dec_fwd(self, x, encs, ret_all=False):
+        """
+        x: torch tensor (B,S,E)
+            the decoding embeddings
+        encs: torch tensor (B,S,E)
+            the output from the encoding stack
+        ret_all: bool
+            not currently implemented
+        """
+        assert ret_all == False
+        fx = x[:,:1]
+        outputs = [fx]
+        for i in range(x.shape[1]-1):
+            fx = self.pos_encoding(fx)
+            for dec in self.dec_layers:
+                fx = dec(fx,encs,dec_mask=None)
+            outputs.append(fx[:,-1:])
+            fx = torch.cat(outputs,dim=1)
         return fx
 
     def get_mask(self, seq_len, bidirectional=False):

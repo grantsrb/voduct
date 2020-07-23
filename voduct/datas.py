@@ -840,6 +840,7 @@ def get_data(seq_len=10, shuffle_split=False,
                          n_samples=50000,
                          difficulty="medium",
                          split_digits=False,
+                         max_count=1000,
                          **kwargs):
     """
     Returns two torch Datasets, one validation and one training.
@@ -864,7 +865,8 @@ def get_data(seq_len=10, shuffle_split=False,
     dataset = globals()[dataset](seq_len=seq_len,
                                  difficulty=difficulty,
                                  n_samples=n_samples,
-                                 split_digits=split_digits)
+                                 split_digits=split_digits,
+                                 max_count=max_count)
     if shuffle_split:
         perm = torch.randperm(len(dataset)).long()
     else:
