@@ -37,6 +37,7 @@ class Tokenizer():
                                        MASK="<MASK>",
                                        START="<START>",
                                        STOP="<STOP>",
+                                       INIT="<INIT>",
                                        seq_len_x=None,
                                        seq_len_y=None,
                                        prepend=False,
@@ -70,6 +71,8 @@ class Tokenizer():
             the token to correspond to the START embedding
         STOP: str
             the token to correspond to the STOP embedding
+        INIT: str
+            a token that optionally all decoding inputs begin with
         seq_len_x: int or None
             if None, then the maximum length of the tokenized X
             will be used for the X sequence length
@@ -84,6 +87,7 @@ class Tokenizer():
         self.MASK = MASK
         self.START = START
         self.STOP = STOP
+        self.INIT = INIT
         self.string_X = X
         self.string_Y = Y
         if split_digits:
@@ -125,6 +129,10 @@ class Tokenizer():
         if self.STOP not in word2idx:
             word2idx[self.STOP] = len(word2idx)
             idx2word[word2idx[self.STOP]] = self.STOP
+        if self.INIT not in word2idx:
+            word2idx[self.INIT] = len(word2idx)
+            idx2word[word2idx[self.INIT]] = self.INIT
+        self.INIT_IDX = word2idx[self.INIT]
         self.word2idx = word2idx
         self.idx2word = idx2word
         if X is not None or Y is not None:
@@ -138,6 +146,11 @@ class Tokenizer():
             self.Y = self.index_tokens(tok_y, seq_len_y+prepend+append,
                                               prepend=prepend,
                                               append=append)
+            self.inits = [self.INIT for i in range(seq_len_y+append)]
+            self.inits = self.index_tokens([self.inits],
+                                            seq_len_y+prepend+append,
+                                            prepend=prepend,
+                                            append=False)
 
 
     def index_tokens(self, toks, seq_len, prepend=False,
@@ -263,6 +276,9 @@ class WordProblems(Dataset):
         self.token_qs = self.tokenizer.token_X
         self.token_ans = self.tokenizer.token_Y
 
+    @property
+    def inits(self):
+        return self.tokenizer.inits
     @property
     def word2idx(self):
         return self.tokenizer.word2idx
@@ -692,7 +708,7 @@ class WordProblems(Dataset):
 class Journal(Dataset):
     def __init__(self, seq_len=10):
         file_name = "dataset.p"
-        self.MASK = "MASK"
+        self.MASK = "<MASK>"
         tup = self.get_data(file_name=file_name, seq_len=seq_len)
         X,Y,word2idx,idx2word = tup
         self.X = X # (N, SeqLen)
@@ -710,9 +726,9 @@ class Journal(Dataset):
         # Get and prepare data
         with open(file_name,'rb') as f:
             self.data_dict = pickle.load(f)
-        temp_fxn = lambda k,v: "STARTENTRY\n{}:\n{}".format(k,v)
+        temp_fxn = lambda k,v: "<STARTENTRY>\n{}:\n{}".format(k,v)
         self.text = [temp_fxn(k,v) for k,v in self.data_dict.items()]
-        self.text = "ENDENTRY\n".join(self.text)
+        self.text = "<ENDENTRY>\n".join(self.text)
 
         tokens = tk.tokenize(self.text)
         words = set(tokens)

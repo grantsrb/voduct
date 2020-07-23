@@ -88,14 +88,16 @@ def train(hyps, verbose=True):
             optimizer.zero_grad()
             targs = y.clone()[:,1:].to(DEVICE)
             idx2word = train_data.idx2word
+            if hyps['init_decs']:
+                y = train_data.inits.clone().repeat(len(x),1)
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
             preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
             if epoch % 3 == 0 and b == 0:
                 ms = torch.argmax(preds,dim=-1)
-                print("before model y:", [idx2word[a.item()] for a in y[0]])
-                print("before model t:", [idx2word[a.item()] for a in targs[0]])
-                print("after model ps:", [idx2word[a.item()] for a in ms[0]])
+                print("y:",[idx2word[a.item()] for a in y[0]])
+                print("t:", [idx2word[a.item()] for a in targs[0]])
+                print("p:", [idx2word[a.item()] for a in ms[0]])
             targs = targs.reshape(-1)
 
             if hyps['masking_task']:
@@ -172,6 +174,8 @@ def train(hyps, verbose=True):
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
                 targs = y[:,1:].clone().reshape(-1).to(DEVICE)
+                if hyps['init_decs']:
+                    y = train_data.inits.clone().repeat(len(x),1)
                 if hyps['masking_task']:
                     print("masking")
                     x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
