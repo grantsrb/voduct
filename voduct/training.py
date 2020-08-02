@@ -36,6 +36,8 @@ def train(hyps, verbose=True):
     # Set manual seed
     hyps['exp_num'] = get_exp_num(hyps['exp_name'])
     hyps['save_folder'] = get_save_folder(hyps)
+    if not os.path.exists(hyps['save_folder']):
+        os.mkdir(hyps['save_folder'])
     hyps['seed'] = try_key(hyps,'seed', int(time.time()))
     torch.manual_seed(hyps['seed'])
     np.random.seed(hyps['seed'])
@@ -44,12 +46,15 @@ def train(hyps, verbose=True):
 
     if verbose:
         print("Retreiving Dataset")
+    if "shuffle_split" not in hyps and hyps['shuffle']:
+        hyps['shuffle_split'] = True
     train_data,val_data = datas.get_data(**hyps)
     if train_data.X.shape[-1] != train_data.Y.shape[-1]:
         hyps['enc_slen'] = train_data.X.shape[-1]
         hyps['dec_slen'] = train_data.Y.shape[-1]
     train_loader = torch.utils.data.DataLoader(train_data,
-                                    batch_size=hyps['batch_size'])
+                                    batch_size=hyps['batch_size'],
+                                    shuffle=hyps['shuffle'])
     val_loader = torch.utils.data.DataLoader(val_data,
                                              batch_size=500)
     hyps['n_vocab'] = len(train_data.word2idx.keys())
@@ -80,6 +85,7 @@ def train(hyps, verbose=True):
         starttime = time.time()
         avg_loss = 0
         avg_acc = 0
+        avg_indy_acc = 0
         mask_avg_loss = 0
         mask_avg_acc = 0
         model.train()
@@ -87,6 +93,7 @@ def train(hyps, verbose=True):
         for b,(x,y) in enumerate(train_loader):
             optimizer.zero_grad()
             targs = y.clone()[:,1:].to(DEVICE)
+            og_shape = targs.shape
             idx2word = train_data.idx2word
             if hyps['init_decs']:
                 y = train_data.inits.clone().repeat(len(x),1)
@@ -125,13 +132,14 @@ def train(hyps, verbose=True):
             # Tot loss and acc
             preds = preds.reshape(-1,preds.shape[-1])
             loss = lossfxn(preds,targs)
-            preds = torch.argmax(preds,dim=-1)
-            acc = (preds==targs).float().mean()
-            try:
-                avg_acc += acc.item()
-            except:
-                print((targs<=0).float().sum())
-                print("Error with accuracy addition:", acc)
+            preds = torch.argmax(preds,dim=-1).reshape(og_shape)
+            targs = targs.reshape(og_shape)
+            sl = og_shape[-1]
+            eq = (preds==targs).float()
+            acc = (eq.sum(-1)==sl).float().mean()
+            indy_acc = eq.mean()
+            avg_acc += acc.item()
+            avg_indy_acc += indy_acc.item()
             avg_loss += loss.item()
 
             if hyps['masking_task']:
@@ -156,10 +164,12 @@ def train(hyps, verbose=True):
         mask_train_acc = mask_avg_acc/len(train_loader)
         train_avg_loss = avg_loss/len(train_loader)
         train_avg_acc = avg_acc/len(train_loader)
+        train_avg_indy = avg_indy_acc/len(train_loader)
 
-        stats_string = "Train Loss:{:.5f} | Train Acc:{:.5f}\n"
+        stats_string = "Train - Loss:{:.5f} | Acc:{:.5f} | Indy:{:.5f}\n"
         stats_string = stats_string.format(train_avg_loss,
-                                           train_avg_acc)
+                                           train_avg_acc,
+                                           train_avg_indy)
         if hyps['masking_task']:
             stats_string+="Tr. Mask Loss:{:.5f} | Tr. Mask Acc:{:.5f}\n"
             stats_string = stats_string.format(mask_train_loss,
@@ -167,13 +177,16 @@ def train(hyps, verbose=True):
         model.eval()
         avg_loss = 0
         avg_acc = 0
+        avg_indy_acc = 0
         mask_avg_loss = 0
         mask_avg_acc = 0
         print("Validating...")
         with torch.no_grad():
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
-                targs = y[:,1:].clone().reshape(-1).to(DEVICE)
+                targs = y[:,1:].clone()
+                og_shape = targs.shape
+                targs = targs.reshape(-1).to(DEVICE)
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
                 if hyps['masking_task']:
@@ -202,13 +215,17 @@ def train(hyps, verbose=True):
                 # Tot loss and acc
                 preds = preds.reshape(-1,preds.shape[-1])
                 loss = lossfxn(preds,targs)
-                preds = torch.argmax(preds,dim=-1)
+                preds = torch.argmax(preds,dim=-1).reshape(og_shape)
+                targs = targs.reshape(og_shape)
+                sl = og_shape[-1]
+                eq = (preds==targs).float()
+                acc = (eq.sum(-1)==sl).float().mean()
+                indy_acc = eq.mean()
                 if b == rand_word_batch or hyps['exp_name']=="test":
                     rand = int(np.random.randint(0,len(x)))
                     question = x[rand]
-                    temp_len = model.decoder.seq_len-1
-                    pred_samp = preds.reshape(len(x), temp_len)[rand]
-                    targ_samp = targs.reshape(len(x), temp_len)[rand]
+                    pred_samp = preds[rand]
+                    targ_samp = targs[rand]
                     idx2word = train_data.idx2word
                     question =  [idx2word[p.item()] for p in question]
                     pred_samp = [idx2word[p.item()] for p in pred_samp]
@@ -217,11 +234,8 @@ def train(hyps, verbose=True):
                     pred_samp = " ".join(pred_samp)
                     targ_samp = " ".join(targ_samp)
 
-                acc = (preds==targs).float().mean()
-                try:
-                    avg_acc += acc.item()
-                except:
-                    print("Error with accuracy addition:", acc)
+                avg_acc += acc.item()
+                avg_indy_acc += indy_acc.item()
                 avg_loss += loss.item()
                 if hyps["masking_task"]:
                     s = "Mask Loss:{:.5f} | Acc:{:.5f} | {:.0f}%"
@@ -238,8 +252,10 @@ def train(hyps, verbose=True):
         mask_val_acc = mask_avg_acc/  len(val_loader)
         val_avg_loss = avg_loss/len(val_loader)
         val_avg_acc = avg_acc/len(val_loader)
-        stats_string += "Val Loss:{:.5f} | Val Acc:{:.5f}\n"
-        stats_string = stats_string.format(val_avg_loss,val_avg_acc)
+        val_avg_indy = avg_indy_acc/len(val_loader)
+        stats_string += "Val - Loss:{:.5f} | Acc:{:.5f} | Indy:{:.5f}\n"
+        stats_string = stats_string.format(val_avg_loss,val_avg_acc,
+                                                        val_avg_indy)
         if hyps['masking_task']:
             stats_string+="Val Mask Loss:{:.5f} | Val Mask Acc:{:.5f}\n"
             stats_string=stats_string.format(mask_avg_loss,mask_avg_acc)
@@ -253,10 +269,12 @@ def train(hyps, verbose=True):
             "hyps":hyps,
             "train_loss":train_avg_loss,
             "train_acc":train_avg_acc,
+            "train_indy":train_avg_indy,
             "mask_train_loss":mask_train_loss,
             "mask_train_acc":mask_train_acc,
             "val_loss":val_avg_loss,
             "val_acc":val_avg_acc,
+            "val_indy":val_avg_indy,
             "mask_val_loss":mask_val_loss,
             "mask_val_acc":mask_val_acc,
             "state_dict":model.state_dict(),
@@ -469,6 +487,7 @@ def hyper_search(hyps, hyp_ranges):
         print("Searches left:", hyper_q.qsize(),"-- Running Time:",
                                              time.time()-starttime)
         hyps = hyper_q.get()
+
         results = train(hyps, verbose=True)
         with open(results_file,'a') as f:
             results = " -- ".join([str(k)+":"+str(results[k]) for\
