@@ -42,6 +42,7 @@ class Tokenizer():
                                        seq_len_y=None,
                                        prepend=False,
                                        append=False,
+                                       index=True,
                                        verbose=True):
         """
         X: list of strings
@@ -83,6 +84,8 @@ class Tokenizer():
             if true, self.START is prepended to the start of the tokens
         append: bool
             if true, self.STOP is appended to the end of the tokens
+        index: bool
+            if true, the tokens are also converted to indices
         """
         self.MASK = MASK
         self.START = START
@@ -94,7 +97,7 @@ class Tokenizer():
             words = set([str(i) for i in range(10)])
         else:
             words = set([str(i) for i in range(100)])
-        
+
         if X is not None or Y is not None:
             x_max_len = 0
             y_max_len = 0
@@ -135,7 +138,7 @@ class Tokenizer():
         self.INIT_IDX = word2idx[self.INIT]
         self.word2idx = word2idx
         self.idx2word = idx2word
-        if X is not None or Y is not None:
+        if (X is not None or Y is not None) and index:
             if verbose:
                 print("Converting to integer indexes")
             seq_len_x = x_max_len if seq_len_x is None else seq_len_x
@@ -186,6 +189,8 @@ class WordProblems(Dataset):
                                           max_count=1000,
                                           split_digits=False,
                                           verbose=True,
+                                          index=True,
+                                          make_structs=False,
                                           **kwargs):
         """
         This is a class to assist in automatic generation of word
@@ -208,6 +213,14 @@ class WordProblems(Dataset):
             the maxium number for the word problems to use
         split_digits: bool
             split digits into individual 0-9 tokens
+        index: bool
+            if false, the sentence based questions and answers are
+            not tokenized and converted to indices.
+        make_structs: bool
+            if true, returns a list of dictionaries of sample questions
+            broken into their sentence parts with the corresponding
+            count dicts for each action, and saved as a member variable
+            self.samp_structs
         """
         self.tokenizer = Tokenizer()
         self.lowercase = lowercase
@@ -222,15 +235,17 @@ class WordProblems(Dataset):
         self.attrs = ["color", "shape", "all", "none"]
         self.colors=["red","blue","green","yellow","orange","purple"]
         self.shapes = ["box", "ball", "cylinder", "coin", "ramp"]
-        z = zip(self.colors,self.shapes)
-        self.obj_types = [(c+" "+s).strip() for c,s in z]
+        self.obj_types = []
+        for color in self.colors:
+            for shape in self.shapes:
+                self.obj_types.append((color+" "+shape).strip())
 
         self.initial_conditions = [
             "<count> <type> objects start at <loc>",
             "<count> <type> objects are initialized at <loc>",
-            "you move <count> <type> objects to <loc>",
-            "you take <count> <type> objects to <loc>",
-            "you put <count> <type> objects at <loc>",
+            #"you move <count> <type> objects to <loc>",
+            #"you take <count> <type> objects to <loc>",
+            #"you put <count> <type> objects at <loc>",
             ]
 
         self.action_statements = [
@@ -254,27 +269,39 @@ class WordProblems(Dataset):
 
         if verbose:
             print("Making data")
-        questions,answers = self.make_data_set(n_samples=n_samples,
+        samples = self.make_data_set(n_samples=n_samples,
                                      lowercase=lowercase,
                                      difficulty=difficulty,
                                      max_count=max_count,
+                                     make_structs=make_structs,
                                      verbose=verbose)
-        self.tokenizer = Tokenizer(X=questions,
-                                   Y=answers,
-                                   split_digits=split_digits,
-                                   prepend=True,
-                                   append=True)
-        self.X = self.tokenizer.X
-        if rand_labels:
-            Y = self.tokenizer.Y
-            for i in range(len(Y)):
-                Y[i][1:3] = torch.randint(len(self.idx2word),(2,))
-            self.tokenizer.Y = Y
-        self.Y = self.tokenizer.Y
-        self.questions = self.tokenizer.string_X
-        self.answers = self.tokenizer.string_Y
-        self.token_qs = self.tokenizer.token_X
-        self.token_ans = self.tokenizer.token_Y
+        self.samp_structs = samples[-1]
+        samples = [list(zip(*s)) for s in samples[:-1]]
+        start_samps, end_samps, move_samps = samples
+        questions = start_samps[0]+end_samps[0]+move_samps[0]
+        answers = start_samps[1]+end_samps[1]+move_samps[1]
+        
+        self.samples = {"start":start_samps, "end":end_samps,
+                                             "move":move_samps}
+        self.questions = questions
+        self.answers = answers
+        if index:
+            self.tokenizer = Tokenizer(X=questions,
+                                       Y=answers,
+                                       split_digits=split_digits,
+                                       prepend=True,
+                                       append=True)
+            self.X = self.tokenizer.X
+            if rand_labels:
+                Y = self.tokenizer.Y
+                for i in range(len(Y)):
+                    Y[i][1:3] = torch.randint(len(self.idx2word),(2,))
+                self.tokenizer.Y = Y
+            self.Y = self.tokenizer.Y
+            self.questions = self.tokenizer.string_X
+            self.answers = self.tokenizer.string_Y
+            self.token_qs = self.tokenizer.token_X
+            self.token_ans = self.tokenizer.token_Y
 
     @property
     def inits(self):
@@ -305,7 +332,8 @@ class WordProblems(Dataset):
                                    min_count=1,
                                    obj_types=None,
                                    locs=None,
-                                   n_inits=1):
+                                   n_inits=1,
+                                   allow_dups=True):
         """
         Creates an inital condition
 
@@ -338,6 +366,9 @@ class WordProblems(Dataset):
             the setting to particular locations.
         n_inits: int
             if you want to instantiate multiple objects in one go.
+        allow_dups: bool
+            if true, then objects of the same type can be initialized
+            mulitple times at the same location.
         """
         if n_inits <= 0: n_inits = 1
         if max_count is None: max_count = 10
@@ -355,10 +386,15 @@ class WordProblems(Dataset):
                 obj_type = rand_sample(obj_types)
             else:
                 obj_types = set(self.obj_types)
-            for obj in count_dict["start"][loc].keys():
-                if obj in obj_types:
-                    obj_types.remove(obj)
-            obj_type = rand_sample(list(obj_types))
+                if not allow_dups:
+                    for obj in count_dict["start"][loc]["all"].keys():
+                        if obj in obj_types:
+                            obj_types.remove(obj)
+                try:
+                    obj_type = rand_sample(list(obj_types))
+                except:
+                    print("Duplicating obj types due to insufficient types")
+                    obj_type = rand_sample(self.obj_types)
 
             color,shape = [o.strip() for o in obj_type.split(" ")]
             count_dict["start"][loc]["all"][obj_type] += count
@@ -464,6 +500,10 @@ class WordProblems(Dataset):
         count_dict["moved"]["color"][color] += count
         count_dict["moved"]["shape"][shape] += count
         count_dict["moved"]["none"] += count
+        info = {"type":obj_type,
+                "count":count,
+                "to":end_loc,
+                "from":start_loc}
         # For variety
         if np.random.random() > .5:
             prep1,prep2 = prep2,prep1
@@ -475,8 +515,7 @@ class WordProblems(Dataset):
                 "<loc1>", "<preposition2>", "<loc2>"]
         vals = [verb, str(count), obj_type, prep1, start_loc,
                                                    prep2, end_loc]
-        info = {k:v for k,v in zip(keys,vals)}
-        for k,v in info.items():
+        for k,v in zip(keys,vals):
             statement = statement.replace(k, v)
         return statement, count_dict, info
 
@@ -549,8 +588,10 @@ class WordProblems(Dataset):
             moved_dict["all"][obj] = 0
             moved_dict["none"] = 0
         count_dict ={
-            "start":{l:{attr:defaultdict(zero) for attr in attrs} for l in self.locations},
-            "end":  {l:{attr:defaultdict(zero) for attr in attrs} for l in self.locations},
+            "start":{l:{attr:defaultdict(zero) for attr in attrs}\
+                                         for l in self.locations},
+            "end":  {l:{attr:defaultdict(zero) for attr in attrs}\
+                                         for l in self.locations},
             "moved":moved_dict
             }
         for loc in self.locations:
@@ -561,6 +602,7 @@ class WordProblems(Dataset):
     def make_data_set(self, n_samples=5000, lowercase=True,
                                             difficulty="easy",
                                             max_count=1000,
+                                            make_structs=False,
                                             verbose=True):
         """
         Makes an easy dataset. Numbers and answers are always 5 or
@@ -574,21 +616,54 @@ class WordProblems(Dataset):
             if true, all letters are lowercase
         difficulty: str
             easy, medium or hard
+        make_structs: bool
+            if true, returns a list of dictionaries of sample questions
+            broken into their sentence parts with the corresponding
+            count dicts for each action
+
+        Returns:
+            <generic>_samples: set of (q,a) tuples
+                each sample set contains string question answer tuples
+            samp_structs: list of dicts
+                each dict has two keys:
+                    "init": dict()
+                        "string":the actual initialization string
+                        "counts":corresponding count dict
+                    "actions": dict()
+                        "strings": list of the action strings
+                        "counts": list of the corresponding count dict
+                            of each action and all actions leading up to
+                            this point.
+                        "infos": list of the corresponding info dict
+                            of each action        
         """
-        samples = set()
+        samp_structs = []
+        start_samples = set()
+        end_samples = set()
+        move_samples = set()
+        samples = [start_samples, end_samples, move_samples]
+        samp_len = np.sum([len(s) for s in samples])
         n_loops = 0
-        while len(samples) < n_samples or n_loops>(n_samples+100000):
+        while samp_len < n_samples or n_loops>(n_samples+100000):
             n_loops += 1
+            if make_structs:
+                samp_struct = {"init":{"string":None, "counts":None},
+                               "actions":{ "strings": [],
+                                           "counts": [],
+                                           "infos":  [] } }
             count_dict = self.get_count_dict()
 
             # Initial conditions
             sentence = ""
             if difficulty.lower() == "easy":
                 n_inits = np.random.randint(1,3)
+                allow_dups = False
             elif difficulty.lower() == "medium":
-                n_inits = np.random.randint(1,5)
+                n_inits = np.random.randint(2,5)
+                allow_dups = True
             else:
                 n_inits = np.random.randint(1,10)
+                allow_dups = True
             start_idx,end_idx = 0,1
             if np.random.random() > .5:
                 start_idx,end_idx = 1,0
@@ -600,11 +675,17 @@ class WordProblems(Dataset):
                                                   max_count=max_count,
                                                   min_count=1,
                                                   locs=self.locations,
-                                                  n_inits=rand_amt)
+                                                  n_inits=rand_amt,
+                                                  allow_dups=allow_dups)
                 n_inits -= rand_amt
                 sentence += init_condish
                 if n_inits > 0: sentence += " and "
             sentence += ". "
+            if make_structs:
+                samp_struct['init']["strings"] = sentence
+                temp_dict = copy.deepcopy(count_dict)
+                del temp_dict["start"]
+                samp_struct['init']["counts"] = temp_dict
 
             if difficulty.lower() == "easy":
                 n_inits = np.random.randint(1,3)
@@ -618,11 +699,20 @@ class WordProblems(Dataset):
                 tup = self.get_action(count_dict=count_dict,
                                       start_loc=None,
                                       end_loc=None)
-                action,count_dict,_ = tup
-                sentence += action+". "
-                if i < n_inits-1:
-                    sentence += "then "
+                action,count_dict,info = tup
+                action = action + ". "
+                sentence += action
+                if i < n_inits-1: sentence += "then "
+                if make_structs:
+                    samp_struct['actions']["strings"].append(action)
+                    temp_dict = copy.deepcopy(count_dict)
+                    del temp_dict["start"]
+                    samp_struct['actions']["counts"].append(temp_dict)
+                    samp_struct['actions']["infos"].append(info)
 
+            if make_structs:
+                samp_structs.append(samp_struct)
+            #starting_samples
             for loc in count_dict["start"].keys():
                 s = "how many <type> objects started at {}?"
                 question = s.format(loc)
@@ -636,7 +726,7 @@ class WordProblems(Dataset):
                         if lowercase: 
                             q = q.lower()
                             ans = ans.lower()
-                        samples.add((q,ans))
+                        start_samples.add((q,ans))
                         continue
                     for obj in count_dict["start"][loc][attr].keys():
                         q = question.replace("<type>",obj)
@@ -647,7 +737,8 @@ class WordProblems(Dataset):
                         if lowercase: 
                             q = q.lower()
                             ans = ans.lower()
-                        samples.add((q,ans))
+                        start_samples.add((q,ans))
+            #ending samples
             for loc in self.locations:
                 for attr in self.attrs:
                     s = "how many <type> objects are at {}?".format(loc)
@@ -660,7 +751,7 @@ class WordProblems(Dataset):
                         if lowercase: 
                             q = q.lower()
                             ans = ans.lower()
-                        samples.add((q,str(ans)))
+                        end_samples.add((q,str(ans)))
                         continue
                     for obj in count_dict["end"][loc][attr].keys():
                         q = s.replace("<type>",obj)
@@ -671,7 +762,8 @@ class WordProblems(Dataset):
                         if lowercase: 
                             q = q.lower()
                             ans = ans.lower()
-                        samples.add((q,str(ans)))
+                        end_samples.add((q,str(ans)))
+            #moving samples
             s = "how many <type> objects did you move?"
             for attr in self.attrs:
                 if attr == "none":
@@ -683,7 +775,7 @@ class WordProblems(Dataset):
                     if lowercase: 
                         q = q.lower()
                         ans = ans.lower()
-                    samples.add((q,ans))
+                    move_samples.add((q,ans))
                     continue
                 objs = set()
                 for loc in count_dict["start"].keys():
@@ -697,12 +789,12 @@ class WordProblems(Dataset):
                     if lowercase: 
                         q = q.lower()
                         ans = ans.lower()
-                    samples.add((q,ans))
+                    move_samples.add((q,ans))
+            samp_len = np.sum([len(s) for s in samples])
             if verbose:
-                print(round(len(samples)/float(n_samples)*100), "%",
+                print(round(samp_len/float(n_samples)*100), "%",
                                                       end="     \r")
-        X,Y = zip(*list(samples))
-        return list(X),list(Y)
+        return start_samples, end_samples, move_samples, samp_structs
 
 
 class Journal(Dataset):
@@ -886,8 +978,11 @@ def get_data(seq_len=10, shuffle_split=False,
     if shuffle_split:
         perm = torch.randperm(len(dataset)).long()
     else:
+        if dataset=="WordProblems":
+            print("WARNING!!!! shuffle_split is off but is highly recommended for WordProblems datasets. PLEASE STOP THIS TRAINING SESSION AND TURN SHUFFLE SPLIT ON")
         perm = torch.arange(len(dataset)).long()
     split_idx = int(len(perm)*train_p)
+    if len(perm)-split_idx > 30000: split_idx = len(perm)-30000
     train_idxs = perm[:split_idx]
     val_idxs = perm[split_idx:]
 
@@ -898,6 +993,10 @@ def get_data(seq_len=10, shuffle_split=False,
     val_dataset.X = val_dataset.X[val_idxs]
     val_dataset.Y = val_dataset.Y[val_idxs]
 
+    dataset = EmptyDataset(X=dataset.X, Y=dataset.Y,
+                               word2idx=word2idx,
+                               idx2word=idx2word,
+                               inits=dataset.inits)
     dataset.X = dataset.X[train_idxs]
     dataset.Y = dataset.Y[train_idxs]
     return dataset, val_dataset
