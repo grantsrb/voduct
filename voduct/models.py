@@ -13,7 +13,8 @@ DEVICE_DICT = {-1:"cpu", 0:"cuda:0"}
 SEQ2SEQ = "seq2seq"
 AUTOENCODER = "autoencoder"
 TRANSFORMER_TYPE = {"Transformer":SEQ2SEQ,
-                    "TransAutoencoder":AUTOENCODER}
+                    "TransAutoencoder":AUTOENCODER,
+                    "Codt":AUTOENCODER}
 CONV = "convolution"
 TRANS = "transformer"
 RSSM = "rssm"
@@ -491,7 +492,7 @@ class Decoder(nn.Module):
         mask = self.get_mask(seq_len,bidirectional=False) if use_mask\
                                                             else None
         self.register_buffer("mask", mask)
-        self.pos_encoding = PositionalEncoder(seq_len, emb_size)
+        self.pos_encoding = PositionalEncoder(seq_len+1, emb_size)
         self.dec_layers = nn.ModuleList([])
         for _ in range(n_layers):
             block = DecodingBlock(emb_size=emb_size,
@@ -625,6 +626,7 @@ class Sin(nn.Module):
 
 
 ######### EXPANSION AND REDUCTION MODULES
+
 class ExpandingAttention(nn.Module):
     """
     This is a mechanism to expand a single embedding into an entire
@@ -931,8 +933,81 @@ class TransAutoencoder(TransformerBase):
         encs = self.collapse_dropout(encs)
         encs = self.expander(encs)
         encs = self.expand_dropout(encs)
-        decs = self.decoder(embs, encs)
+        dembs = self.embeddings(y)
+        decs = self.decoder(dembs, encs)
         decs = self.dec_dropout(decs)
         decs = decs.reshape(-1,decs.shape[-1])
         return self.classifier(decs)
+
+class Codt(TransformerBase):
+    """
+    this is an experimental model to prove that the basic idea of
+    minimal supervision transformers can learn compression
+    """
+    def __init__(self, collapse_size=1, collapse_layers=3,
+                                        *args, **kwargs):
+        """
+        collapse_size: int
+            the number of elements in the collapsed vector sequence
+        collapse_layers: int
+            the number of layers used to collapse the encoded sequence
+        """
+        super().__init__(*args, **kwargs)
+        self.transformer_type = AUTOENCODER
+        self.collapse_size = collapse_size
+        self.collapse_layers = collapse_layers
+        self.dec_slen = self.enc_slen
+
+        self.embeddings = nn.Embedding(self.n_vocab, self.emb_size)
+
+        self.encoder = Encoder(self.enc_slen,emb_size=self.emb_size,
+                                             attn_size=self.attn_size,
+                                             n_layers=self.enc_layers,
+                                             n_heads=self.n_heads,
+                                             use_mask=self.enc_mask,
+                                             act_fxn=self.act_fxn)
+        self.collapse_init = torch.randn(1,1,self.emb_size)
+        self.collapse_init = nn.Parameter(self.collapse_init)
+        self.collapser = Decoder(self.collapse_size,
+                                 emb_size=self.emb_size,
+                                 attn_size=self.attn_size,
+                                 n_layers=3,
+                                 n_heads=self.n_heads,
+                                 use_mask=False,
+                                 act_fxn=self.act_fxn)
+
+        self.decoder = Decoder(self.dec_slen,self.emb_size,
+                                             self.attn_size,
+                                             self.dec_layers,
+                                             n_heads=self.n_heads,
+                                             act_fxn=self.act_fxn)
+        self.decode_init = torch.randn(1,self.dec_slen,self.emb_size)
+        self.decode_init = nn.Parameter(self.decode_init)
+
+        self.classifier = Classifier(self.emb_size,
+                                     self.n_vocab,
+                                     h_size=self.class_h_size,
+                                     bnorm=self.class_bnorm,
+                                     drop_p=self.class_drop_p,
+                                     act_fxn=self.act_fxn)
+
+        self.enc_dropout = nn.Dropout(self.enc_drop_p)
+        self.collapse_dropout = nn.Dropout(self.collapse_drop_p)
+        self.dec_dropout = nn.Dropout(self.dec_drop_p)
+
+    def forward(self, x, y):
+        self.embeddings.weight.data[0,:] = 0 # Mask index
+        embs = self.embeddings(x)
+        encs = self.encoder(embs)
+        encs = self.enc_dropout(encs)
+        init = self.collapse_init.repeat((len(x),self.collapse_size,1))
+        encs = self.collapser(init, encs)
+        encs = self.collapse_dropout(encs)
+        init = self.decode_init.repeat((len(x),1,1))
+        decs = self.decoder(init, encs)
+        decs = self.dec_dropout(decs)
+        shape = decs.shape
+        decs = decs.reshape(-1,decs.shape[-1])
+        preds = self.classifier(decs)
+        return preds.reshape(shape[0],shape[1],-1)
 

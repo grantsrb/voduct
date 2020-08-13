@@ -8,6 +8,7 @@ import copy
 import pickle
 import tokenizer as tk
 import voduct.models as vomods
+import random
 
 
 
@@ -43,6 +44,7 @@ class Tokenizer():
                                        prepend=False,
                                        append=False,
                                        index=True,
+                                       strings=None,
                                        verbose=True):
         """
         X: list of strings
@@ -86,6 +88,9 @@ class Tokenizer():
             if true, self.STOP is appended to the end of the tokens
         index: bool
             if true, the tokens are also converted to indices
+        strings: list of str
+            each string in the argued list is included in the conversion
+            dictionaries word2idx and idx2word
         """
         self.MASK = MASK
         self.START = START
@@ -93,39 +98,39 @@ class Tokenizer():
         self.INIT = INIT
         self.string_X = X
         self.string_Y = Y
+        self.split_digits = split_digits
         if split_digits:
             words = set([str(i) for i in range(10)])
         else:
             words = set([str(i) for i in range(100)])
 
+        x_max_len = 0
+        y_max_len = 0
+        tok_x = []
+        tok_y = []
         if X is not None or Y is not None:
-            x_max_len = 0
-            y_max_len = 0
-            tok_x = []
-            tok_y = []
-            n_loops = len(X) if X is not None else len(Y)
             if verbose:
                 print("Tokenizing")
-            for i in range(n_loops):
-                tok_x.append(tk.tokenize(X[i],
-                             split_digits=split_digits))
-                words = words | set(tok_x[i])
-                x_max_len = max(x_max_len,len(tok_x[i]))
-                tok_y.append(tk.tokenize(Y[i],
-                             split_digits=split_digits))
-                words = words | set(tok_y[i])
-                y_max_len = max(y_max_len,len(tok_y[i]))
-                if verbose:
-                    print(round(float(i)/len(X)*100),"%",
-                                                    end="    \r")
-            self.token_X = tok_x
-            self.token_Y = tok_y
+            if X is not None:
+                tok_x,x_max_len,words = self.tokenize(X,words=words,
+                                                        verbose=verbose)
+            if Y is not None:
+                tok_y,y_max_len,words = self.tokenize(Y, words=words,
+                                                        verbose=verbose)
+        self.token_X = tok_x
+        self.token_Y = tok_y
         if word2idx is None:
             word2idx = {w:i+1 for i,w in enumerate(words)}
             word2idx[self.MASK] = 0
         if idx2word is None:
             idx2word = {i+1:w for i,w in enumerate(words)}
             idx2word[0] = self.MASK
+        if strings is not None:
+            for s in strings:
+                if s not in word2idx:
+                    idx = len(word2idx)
+                    word2idx[s] = idx
+                    idx2word[idx] = s
         if self.START not in word2idx:
             word2idx[self.START] = len(word2idx)
             idx2word[word2idx[self.START]] = self.START
@@ -138,23 +143,54 @@ class Tokenizer():
         self.INIT_IDX = word2idx[self.INIT]
         self.word2idx = word2idx
         self.idx2word = idx2word
-        if (X is not None or Y is not None) and index:
+        self.seq_len_x = x_max_len+prepend+append if seq_len_x is None\
+                                                        else seq_len_x
+
+        if len(tok_x) > 0 and index:
             if verbose:
                 print("Converting to integer indexes")
-            seq_len_x = x_max_len if seq_len_x is None else seq_len_x
-            self.X = self.index_tokens(tok_x, seq_len_x+prepend+append,
+            self.X = self.index_tokens(tok_x, self.seq_len_x,
                                               prepend=prepend,
                                               append=append)
-            seq_len_y = y_max_len if seq_len_y is None else seq_len_y
-            self.Y = self.index_tokens(tok_y, seq_len_y+prepend+append,
+        self.seq_len_y = y_max_len+prepend+append if seq_len_y is None\
+                                                        else seq_len_y
+        if len(tok_y) > 0 and index:
+            if verbose:
+                print("Converting to integer indexes")
+            self.seq_len_y = seq_len_y
+            self.Y = self.index_tokens(tok_y, seq_len_y,
                                               prepend=prepend,
                                               append=append)
-            self.inits = [self.INIT for i in range(seq_len_y+append)]
-            self.inits = self.index_tokens([self.inits],
-                                            seq_len_y+prepend+append,
+        self.inits = [self.INIT for i in range(self.seq_len_y)]
+        self.inits = self.index_tokens([self.inits],
+                                            seq_len_y,
                                             prepend=prepend,
                                             append=False)
 
+    def tokenize(self, lostr, words=None, split_digits=None,
+                                          verbose=False):
+        """
+        lostr: list of str
+            a list of strings to be tokenized
+        words: optional set of str
+            the current word set. if none, a new set is created
+        split_digits: bool or None
+            if none, self.split_digits is used
+        """
+        max_len = 0
+        if words is None:
+            words = set()
+        if split_digits is None:
+            split_digits = self.split_digits
+        toks = []
+        for i in range(len(lostr)):
+            toks.append(tk.tokenize(lostr[i],
+                        split_digits=split_digits))
+            words = words | set(toks[i])
+            max_len = max(max_len,len(toks[i]))
+            if verbose:
+                print(round(float(i)/len(lostr)*100),"%", end="    \r")
+        return toks,max_len,words
 
     def index_tokens(self, toks, seq_len, prepend=False,
                                           append=False,
@@ -171,16 +207,26 @@ class Tokenizer():
         append: bool
             if true, self.STOP is appended to the end of the tokens
         """
+        if seq_len is None:
+            seq_len = len(toks[0])+prepend+append
         X = torch.zeros(len(toks),seq_len).long()
         for i in range(len(toks)):
             if prepend: X[i,0] = self.word2idx[self.START]
             for j,x in enumerate(toks[i]):
-                X[i,j+prepend] = self.word2idx[x]
+                if j < seq_len-prepend:
+                    try:
+                        X[i,j+prepend] = self.word2idx[x]
+                    except:
+                        s = "Key error using {}, adding {} to dicts"
+                        print(s.format(x,x))
+                        idx = len(self.word2idx)
+                        self.word2idx[x] = idx
+                        self.idx2word[idx] = x
+                        X[i,j+prepend] = self.word2idx[x]
             if append:
                 X[i,min(j+1+prepend,seq_len-1)]=self.word2idx[self.STOP]
             if verbose:
-                print(round(float(i)/len(toks)*100),"%",
-                                             end="    \r")
+                print(round(float(i)/len(toks)*100),"%", end="    \r")
         return X
 
 class WordProblems(Dataset):
@@ -190,7 +236,10 @@ class WordProblems(Dataset):
                                           split_digits=False,
                                           verbose=True,
                                           index=True,
-                                          make_structs=False,
+                                          use_structs=True,
+                                          samp_ps={"start":.15,
+                                                   "end":.7,
+                                                   "move":.15},
                                           **kwargs):
         """
         This is a class to assist in automatic generation of word
@@ -216,16 +265,27 @@ class WordProblems(Dataset):
         index: bool
             if false, the sentence based questions and answers are
             not tokenized and converted to indices.
-        make_structs: bool
-            if true, returns a list of dictionaries of sample questions
+        use_structs: bool
+            if true, uses a list of dictionaries of sample questions
             broken into their sentence parts with the corresponding
-            count dicts for each action, and saved as a member variable
-            self.samp_structs
+            count dicts for each action to build questions and answers
+            on the fly.
+        samp_ps:dict
+            keys: str
+                the types of samples
+            vals: float
+                the corresponding proportion of samples that should be
+                this type of sample
         """
         self.tokenizer = Tokenizer()
         self.lowercase = lowercase
+        if "exp_name" in kwargs and kwargs['exp_name']=="test":
+            n_samples = 100
         self.n_samples = n_samples
         self.max_count = max_count
+        self.samp_ps = samp_ps
+        self.use_structs = use_structs
+        self.split_digits = split_digits
         rand_labels = False
         if difficulty == "rand" or difficulty == "random":
             rand_labels = True
@@ -259,7 +319,7 @@ class WordProblems(Dataset):
         self.pos_prepositions = ["to"]
         self.neg_prepositions = ["from", "away from"]
         self.prepositions = [self.pos_prepositions,self.neg_prepositions]
-        self.locations = ["the starting point","the goal"]
+        self.locations = ["the grey area","the brown area"]
 
         self.directions = {
             "move":["in front of","left of","right of","on top of",
@@ -273,35 +333,161 @@ class WordProblems(Dataset):
                                      lowercase=lowercase,
                                      difficulty=difficulty,
                                      max_count=max_count,
-                                     make_structs=make_structs,
+                                     samp_ps=self.samp_ps,
+                                     use_structs=self.use_structs,
                                      verbose=verbose)
         self.samp_structs = samples[-1]
+        self.sampled_types = self.count_obj_types(self.samp_structs)
         samples = [list(zip(*s)) for s in samples[:-1]]
         start_samps, end_samps, move_samps = samples
+        self.start_samps = start_samps # list of lists
+        self.end_samps = end_samps
+        self.move_samps = move_samps
         questions = start_samps[0]+end_samps[0]+move_samps[0]
         answers = start_samps[1]+end_samps[1]+move_samps[1]
-        
+
         self.samples = {"start":start_samps, "end":end_samps,
                                              "move":move_samps}
         self.questions = questions
         self.answers = answers
+        extras = self.colors+self.shapes
+        self.tokenizer = Tokenizer(X=questions,
+                                   Y=answers,
+                                   split_digits=self.split_digits,
+                                   index=False,
+                                   prepend=True,
+                                   strings=extras,
+                                   append=True)
         if index:
-            self.tokenizer = Tokenizer(X=questions,
-                                       Y=answers,
-                                       split_digits=split_digits,
-                                       prepend=True,
-                                       append=True)
-            self.X = self.tokenizer.X
+            xlen = self.tokenizer.seq_len_x
+            self.X = self.tokenizer.index_tokens(self.tokenizer.token_X,
+                                                 prepend=True,
+                                                 append=True,
+                                                 seq_len=xlen)
+            self.tokenizer.X = self.X
+            ylen = self.tokenizer.seq_len_y
+            self.Y = self.tokenizer.index_tokens(self.tokenizer.token_Y,
+                                                 prepend=True,
+                                                 append=True,
+                                                 seq_len=ylen)
             if rand_labels:
-                Y = self.tokenizer.Y
-                for i in range(len(Y)):
-                    Y[i][1:3] = torch.randint(len(self.idx2word),(2,))
-                self.tokenizer.Y = Y
-            self.Y = self.tokenizer.Y
+                for i in range(len(self.Y)):
+                    self.Y[i][1:3]=torch.randint(len(self.idx2word),(2,))
+            self.tokenizer.Y = self.Y
             self.questions = self.tokenizer.string_X
             self.answers = self.tokenizer.string_Y
             self.token_qs = self.tokenizer.token_X
             self.token_ans = self.tokenizer.token_Y
+
+    def struct_getitem(self,idx):
+        """
+        Use this function to sample from the sentence structs to create
+        sentences on the fly.
+
+        idx: int
+            the index of the struct
+        """
+        q,a = self.struct2qa(self.samp_structs[idx])
+        t = self.tokenizer
+        tok_q,_,_ = t.tokenize([q])
+        tok_a,_,_ = t.tokenize([a])
+        x = self.tokenizer.index_tokens(tok_q,self.seq_len_x,
+                                                prepend=True,
+                                                append=True,
+                                                verbose=False)
+        y = self.tokenizer.index_tokens(tok_a,self.seq_len_y,
+                                                prepend=True,
+                                                append=True,
+                                                verbose=False)
+        return x[0],y[0]
+
+    def struct2qa(self, struct, qtype="rand"):
+        """
+        This function takes in a single struct and returns a
+        complete question-answer pair.
+
+        struct: dict
+            items:
+                "init": dict()
+                    "string":the actual initialization string
+                    "counts": corresponding count dict
+                "actions": dict()
+                    "strings": list of the action strings
+                    "counts": list of the corresponding count dict
+                        of each action and all actions leading up to
+                        this point.
+                    "infos": list of the corresponding info dict
+                        of each action        
+        qtype: str ("end", "start", "move", "rand", "random")
+            the type of question. available options are "end", "start",
+            "move", "rand". "rand" will return a random question type
+            with probability corresponding to the self.samp_ps dict
+        """
+        options = {"end":self.get_end_qs,
+                   "start":self.get_start_qs,
+                   "move":self.get_move_qs}
+        sentence = struct["init"]["string"]
+        for i,action in enumerate(struct["actions"]["strings"]):
+            if i > 0:
+                sentence += "then "
+            sentence += action
+        count_dict = struct['actions']["counts"][-1]
+        count_dict["start"] = struct["init"]["counts"]["end"]
+        if qtype == "rand" or qtype == "random":
+            keys = list(options.keys())
+            keys,ps = list(zip(*self.samp_ps.items()))
+            qtype = np.random.choice(keys,p=ps)
+        if qtype == "end":
+            qas = self.get_end_qs(sentence, count_dict)
+        elif qtype == "start":
+            qas = self.get_start_qs(sentence, count_dict)
+        elif qtype == "move":
+            qas = self.get_move_qs(sentence, count_dict)
+        return random.sample(qas, 1)[0]
+
+    def count_obj_types(self, structs):
+        """
+        Searches the structs dict to find every object type (color
+        shape combination) used in the data. Returns a dict of these
+        object types with the number of data samples each object type
+        appeared in.
+
+        structs: list of count dicts
+            each entry in the list corresponds to a sample. The count
+            dicts have the following structure
+            keys: string
+                "init": dict
+                    keys: str
+                        "counts": dict
+                            keys: str
+                                "end": dict
+                                    keys: str
+                                        "<loc>": dict
+                                            keys: str
+                                                "all": dict
+                                                    keys: str
+                                                       "<obj_type>":int
+        Returns:
+            all_types: dict
+                A dict of every object type as keys with the number
+                of samples that the object type appears in as the
+                corresponding value.
+                keys: str
+                    object types
+                values: int
+                    the number of samples in which this object type
+                    appears
+        """
+        all_types = {ot:0 for ot in self.obj_types}
+        for s,struct in enumerate(structs):
+            obj_types = set()
+            locations = struct["init"]["counts"]["end"]
+            for loc in locations.keys():
+                for obj_type in locations[loc]["all"].keys():
+                    obj_types.add(obj_type)
+            for obj_type in obj_types:
+                all_types[obj_type] += 1
+        return all_types
 
     @property
     def inits(self):
@@ -321,11 +507,21 @@ class WordProblems(Dataset):
     @property
     def STOP(self):
         return self.tokenizer.STOP
+    @property
+    def seq_len_x(self):
+        return self.tokenizer.seq_len_x
+    @property
+    def seq_len_y(self):
+        return self.tokenizer.seq_len_y
                         
     def __len__(self):
+        if self.use_structs:
+            return len(self.samp_structs)
         return len(self.X)
 
     def __getitem__(self,idx):
+        if self.use_structs:
+            return self.struct_getitem(idx)
         return self.X[idx],self.Y[idx]
 
     def get_init(self, count_dict, max_count=10,
@@ -602,13 +798,15 @@ class WordProblems(Dataset):
     def make_data_set(self, n_samples=5000, lowercase=True,
                                             difficulty="easy",
                                             max_count=1000,
-                                            make_structs=False,
+                                            use_structs=False,
+                                            samp_ps={"start":.15,
+                                                     "end":.7,
+                                                     "move":.15},
                                             verbose=True):
         """
         Makes an easy dataset. Numbers and answers are always 5 or
         less. The form of the statements is always 1 sub-statement
-        maximum. The locations are either the goal or the starting
-        point.
+        maximum. 
 
         n_samples: int
             the number of training examples
@@ -616,10 +814,16 @@ class WordProblems(Dataset):
             if true, all letters are lowercase
         difficulty: str
             easy, medium or hard
-        make_structs: bool
-            if true, returns a list of dictionaries of sample questions
-            broken into their sentence parts with the corresponding
-            count dicts for each action
+        use_structs: bool
+            if true, samples are counted based off of the number of
+            structs instead of the number of samples
+        samp_ps:dict
+            keys: str
+                the types of samples
+            vals: float
+                the corresponding proportion of samples that should be
+                this type of sample
+
 
         Returns:
             <generic>_samples: set of (q,a) tuples
@@ -641,16 +845,18 @@ class WordProblems(Dataset):
         start_samples = set()
         end_samples = set()
         move_samples = set()
+        sentences = set()
         samples = [start_samples, end_samples, move_samples]
-        samp_len = np.sum([len(s) for s in samples])
+        samp_dict = {"start":start_samples, "end":end_samples,
+                                            "move":move_samples}
+        samp_len = 0
         n_loops = 0
         while samp_len < n_samples or n_loops>(n_samples+100000):
             n_loops += 1
-            if make_structs:
-                samp_struct = {"init":{"string":None, "counts":None},
-                               "actions":{ "strings": [],
-                                           "counts": [],
-                                           "infos":  [] } }
+            samp_struct = {"init":{"string":None, "counts":None},
+                           "actions":{ "strings": [],
+                                       "counts": [],
+                                       "infos":  [] } }
             count_dict = self.get_count_dict()
 
             # Initial conditions
@@ -681,11 +887,10 @@ class WordProblems(Dataset):
                 sentence += init_condish
                 if n_inits > 0: sentence += " and "
             sentence += ". "
-            if make_structs:
-                samp_struct['init']["strings"] = sentence
-                temp_dict = copy.deepcopy(count_dict)
-                del temp_dict["start"]
-                samp_struct['init']["counts"] = temp_dict
+            samp_struct['init']["string"] = sentence
+            temp_dict = copy.deepcopy(count_dict)
+            del temp_dict["start"]
+            samp_struct['init']["counts"] = temp_dict
 
             if difficulty.lower() == "easy":
                 n_inits = np.random.randint(1,3)
@@ -703,98 +908,168 @@ class WordProblems(Dataset):
                 action = action + ". "
                 sentence += action
                 if i < n_inits-1: sentence += "then "
-                if make_structs:
-                    samp_struct['actions']["strings"].append(action)
-                    temp_dict = copy.deepcopy(count_dict)
-                    del temp_dict["start"]
-                    samp_struct['actions']["counts"].append(temp_dict)
-                    samp_struct['actions']["infos"].append(info)
+                samp_struct['actions']["strings"].append(action)
+                temp_dict = copy.deepcopy(count_dict)
+                del temp_dict["start"]
+                samp_struct['actions']["counts"].append(temp_dict)
+                samp_struct['actions']["infos"].append(info)
 
-            if make_structs:
+            if sentence not in sentences:
+                sentences.add(sentence)
                 samp_structs.append(samp_struct)
-            #starting_samples
-            for loc in count_dict["start"].keys():
-                s = "how many <type> objects started at {}?"
-                question = s.format(loc)
-                for attr in self.attrs:
-                    if attr == "none":
-                        q = question.replace("<type> ","")
-                        q = sentence + q
-                        count = count_dict["start"][loc][attr]
-                        ans = "{} objects".format(count)
-                        if count == 1: ans = ans[:-1]
-                        if lowercase: 
-                            q = q.lower()
-                            ans = ans.lower()
-                        start_samples.add((q,ans))
-                        continue
-                    for obj in count_dict["start"][loc][attr].keys():
-                        q = question.replace("<type>",obj)
-                        q = sentence + q
-                        count = count_dict["start"][loc][attr][obj]
-                        ans = "{} {} objects".format(count,obj)
-                        if count == 1: ans = ans[:-1]
-                        if lowercase: 
-                            q = q.lower()
-                            ans = ans.lower()
-                        start_samples.add((q,ans))
-            #ending samples
-            for loc in self.locations:
-                for attr in self.attrs:
-                    s = "how many <type> objects are at {}?".format(loc)
-                    if attr == "none":
-                        q = s.replace("<type> ", "")
-                        q = sentence + q
-                        count = count_dict["end"][loc][attr]
-                        ans = "{} objects".format(count)
-                        if count == 1: ans = ans[:-1]
-                        if lowercase: 
-                            q = q.lower()
-                            ans = ans.lower()
-                        end_samples.add((q,str(ans)))
-                        continue
-                    for obj in count_dict["end"][loc][attr].keys():
-                        q = s.replace("<type>",obj)
-                        q = sentence + q
-                        count = count_dict["end"][loc][attr][obj]
-                        ans = "{} {} objects".format(count,obj)
-                        if count == 1: ans = ans[:-1]
-                        if lowercase: 
-                            q = q.lower()
-                            ans = ans.lower()
-                        end_samples.add((q,str(ans)))
-            #moving samples
-            s = "how many <type> objects did you move?"
-            for attr in self.attrs:
-                if attr == "none":
-                    q = s.replace("<type> ","")
-                    q = sentence + q
-                    count = count_dict["moved"][attr]
-                    ans = "{} objects".format(count)
-                    if count == 1: ans = ans[:-1]
-                    if lowercase: 
-                        q = q.lower()
-                        ans = ans.lower()
-                    move_samples.add((q,ans))
-                    continue
-                objs = set()
-                for loc in count_dict["start"].keys():
-                    objs |= set(count_dict["start"][loc][attr].keys())
-                for obj in objs:
-                    q = s.replace("<type>",obj)
-                    q = sentence + q
-                    count = count_dict["moved"][attr][obj]
-                    ans = "{} {} objects".format(count,obj)
-                    if count == 1: ans = ans[:-1]
-                    if lowercase: 
-                        q = q.lower()
-                        ans = ans.lower()
-                    move_samples.add((q,ans))
-            samp_len = np.sum([len(s) for s in samples])
+                start_samples |= self.get_start_qs(sentence, count_dict)
+                end_samples |= self.get_end_qs(sentence, count_dict)
+                move_samples |= self.get_move_qs(sentence, count_dict)
+            
+            if use_structs:
+                samp_len = len(samp_structs)
+            else:
+                max_key = get_max_key(samp_ps)
+                samp_len = len(samp_dict[max_key])/samp_ps[max_key] 
             if verbose:
                 print(round(samp_len/float(n_samples)*100), "%",
                                                       end="     \r")
+
+        start_len=min(int(samp_len*samp_ps["start"]),len(start_samples))
+        start_samples = random.sample(start_samples, start_len)
+        move_len=min(int(samp_len*samp_ps["move"]), len(move_samples))
+        move_samples = random.sample(move_samples, move_len)
+        end_len = min(int(samp_len*samp_ps["end"]), len(end_samples))
+        end_samples = random.sample(end_samples, end_len)
+        if verbose:
+            s = "Sample Portions:\nstart: {}\nend: {}\nmove: {}"
+            print(s.format(start_len,end_len,move_len))
         return start_samples, end_samples, move_samples, samp_structs
+    
+    def get_start_qs(self, sentence, count_dict):
+        """
+        Returns a question along with an answer that corresponds to the
+        current struct and count dict.
+
+        sentence: str
+            the current sentence
+        count_dict: dict
+            the corresponding count dict to this sentence (see
+            get_count_dict() for more information on the structure
+            of a count_dict)
+        """
+        samples = set()
+        for loc in count_dict["start"].keys():
+            s = "how many <type> objects started at {}?"
+            question = s.format(loc)
+            for attr in self.attrs:
+                if attr == "none":
+                    q = question.replace("<type> ","")
+                    q = sentence + q
+                    count = count_dict["start"][loc][attr]
+                    ans = "{} objects".format(count)
+                    if count == 1: ans = ans[:-1]
+                    q = q.lower()
+                    ans = ans.lower()
+                    samples.add((q,ans))
+                    continue
+                for obj in count_dict["start"][loc][attr].keys():
+                    q = question.replace("<type>",obj)
+                    q = sentence + q
+                    count = count_dict["start"][loc][attr][obj]
+                    ans = "{} {} objects".format(count,obj)
+                    if count == 1: ans = ans[:-1]
+                    q = q.lower()
+                    ans = ans.lower()
+                    samples.add((q,ans))
+        return samples
+
+    def get_end_qs(self, sentence, count_dict):
+        """
+        Returns a question along with an answer that corresponds to the
+        current struct and count dict.
+
+        sentence: str
+            the current sentence
+        count_dict: dict
+            the corresponding count dict to this sentence (see
+            get_count_dict() for more information on the structure
+            of a count_dict)
+        """
+        samples = set()
+        for loc in self.locations:
+            for attr in self.attrs:
+                s = "how many <type> objects are at {}?".format(loc)
+                if attr == "none":
+                    q = s.replace("<type> ", "")
+                    q = sentence + q
+                    count = count_dict["end"][loc][attr]
+                    ans = "{} objects".format(count)
+                    if count == 1: ans = ans[:-1]
+                    q = q.lower()
+                    ans = ans.lower()
+                    samples.add((q,str(ans)))
+                    continue
+                for obj in count_dict["end"][loc][attr].keys():
+                    q = s.replace("<type>",obj)
+                    q = sentence + q
+                    count = count_dict["end"][loc][attr][obj]
+                    ans = "{} {} objects".format(count,obj)
+                    if count == 1: ans = ans[:-1]
+                    q = q.lower()
+                    ans = ans.lower()
+                    samples.add((q,str(ans)))
+        return samples
+
+    def get_move_qs(self, sentence, count_dict):
+        """
+        Returns a question along with an answer that corresponds to the
+        current struct and count dict.
+
+        sentence: str
+            the current sentence
+        count_dict: dict
+            the corresponding count dict to this sentence (see
+            get_count_dict() for more information on the structure
+            of a count_dict)
+        """
+        samples = set()
+        s = "how many <type> objects did you move?"
+        for attr in self.attrs:
+            if attr == "none":
+                q = s.replace("<type> ","")
+                q = sentence + q
+                count = count_dict["moved"][attr]
+                ans = "{} objects".format(count)
+                if count == 1: ans = ans[:-1]
+                q = q.lower()
+                ans = ans.lower()
+                samples.add((q,ans))
+                continue
+            objs = set()
+            for loc in count_dict["start"].keys():
+                objs |= set(count_dict["start"][loc][attr].keys())
+            for obj in objs:
+                q = s.replace("<type>",obj)
+                q = sentence + q
+                count = count_dict["moved"][attr][obj]
+                ans = "{} {} objects".format(count,obj)
+                if count == 1: ans = ans[:-1]
+                q = q.lower()
+                ans = ans.lower()
+                samples.add((q,ans))
+        return samples
+
+def get_max_key(d):
+    """
+    Returns key corresponding to maxium value
+
+    d: dict
+        keys: object
+        vals: int or float
+    """
+    max_v = -np.inf
+    max_k = None
+    for k,v in d.items():
+        if v > max_v:
+            max_v = v
+            max_k = k
+    return max_k
 
 
 class Journal(Dataset):
@@ -970,16 +1245,22 @@ def get_data(seq_len=10, shuffle_split=False,
         split digits into individual 0-9 tokens
     """
 
+    if "end_p" in kwargs:
+        samp_ps = {"end":kwargs["end_p"],
+                   "start":kwargs["start_p"],
+                   "move":kwargs["move_p"]}
     dataset = globals()[dataset](seq_len=seq_len,
                                  difficulty=difficulty,
                                  n_samples=n_samples,
                                  split_digits=split_digits,
-                                 max_count=max_count)
+                                 max_count=max_count,
+                                 samp_ps=samp_ps,
+                                 **kwargs)
     if shuffle_split:
         perm = torch.randperm(len(dataset)).long()
     else:
         if dataset=="WordProblems":
-            print("WARNING!!!! shuffle_split is off but is highly recommended for WordProblems datasets. PLEASE STOP THIS TRAINING SESSION AND TURN SHUFFLE SPLIT ON")
+            print("WARNING!!!! shuffle_split is off but is highly recommended for WordProblems datasets.\nPLEASE STOP THIS TRAINING SESSION AND TURN SHUFFLE SPLIT ON")
         perm = torch.arange(len(dataset)).long()
     split_idx = int(len(perm)*train_p)
     if len(perm)-split_idx > 30000: split_idx = len(perm)-30000
@@ -987,18 +1268,18 @@ def get_data(seq_len=10, shuffle_split=False,
     val_idxs = perm[split_idx:]
 
     word2idx,idx2word = dataset.word2idx, dataset.idx2word
-    val_dataset = EmptyDataset(X=dataset.X, Y=dataset.Y,
+    val_dataset = EmptyDataset(X=dataset.X[val_idxs],
+                               Y=dataset.Y[val_idxs],
                                word2idx=word2idx,
                                idx2word=idx2word)
-    val_dataset.X = val_dataset.X[val_idxs]
-    val_dataset.Y = val_dataset.Y[val_idxs]
 
-    dataset = EmptyDataset(X=dataset.X, Y=dataset.Y,
-                               word2idx=word2idx,
-                               idx2word=idx2word,
-                               inits=dataset.inits)
-    dataset.X = dataset.X[train_idxs]
-    dataset.Y = dataset.Y[train_idxs]
+    dataset = EmptyDataset(X=dataset.X[train_idxs],
+                           Y=dataset.Y[train_idxs],
+                           word2idx=word2idx,
+                           idx2word=idx2word,
+                           inits=dataset.inits,
+                           sample_structs=dataset.samp_structs,
+                           sampled_types=dataset.sampled_types)
     return dataset, val_dataset
 
 

@@ -66,6 +66,9 @@ def train(hyps, verbose=True):
     optimizer = torch.optim.Adam(model.parameters(), lr=hyps['lr'],
                                            weight_decay=hyps['l2'])
     lossfxn = nn.CrossEntropyLoss()
+    scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5,
+                                                    patience=6,
+                                                    verbose=True)
 
     if verbose:
         print("Beginning training for {}".format(hyps['save_folder']))
@@ -73,6 +76,8 @@ def train(hyps, verbose=True):
         print("val shape:", val_data.X.shape)
 
     record_session(hyps,model)
+    if hyps['dataset'] == "WordProblem":
+        save_data_structs(train_data.samp_structs)
 
     if hyps['exp_name'] == "test":
         hyps['n_epochs'] = 2
@@ -92,7 +97,10 @@ def train(hyps, verbose=True):
         print("Training...")
         for b,(x,y) in enumerate(train_loader):
             optimizer.zero_grad()
-            targs = y.clone()[:,1:].to(DEVICE)
+            if model.transformer_type == models.AUTOENCODER:
+                targs = x.clone()[:,1:].to(DEVICE)
+            else:
+                targs = y.clone()[:,1:].to(DEVICE)
             og_shape = targs.shape
             idx2word = train_data.idx2word
             if hyps['init_decs']:
@@ -100,6 +108,7 @@ def train(hyps, verbose=True):
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
             preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
+            print("preds", preds.shape)
             if epoch % 3 == 0 and b == 0:
                 ms = torch.argmax(preds,dim=-1)
                 print("y:",[idx2word[a.item()] for a in y[0]])
@@ -184,9 +193,12 @@ def train(hyps, verbose=True):
         with torch.no_grad():
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
-                targs = y[:,1:].clone()
+                if model.transformer_type == models.AUTOENCODER:
+                    targs = x.clone()[:,1:].to(DEVICE)
+                else:
+                    targs = y.clone()[:,1:].to(DEVICE)
                 og_shape = targs.shape
-                targs = targs.reshape(-1).to(DEVICE)
+                targs = targs.reshape(-1)
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
                 if hyps['masking_task']:
@@ -252,6 +264,7 @@ def train(hyps, verbose=True):
         mask_val_acc = mask_avg_acc/  len(val_loader)
         val_avg_loss = avg_loss/len(val_loader)
         val_avg_acc = avg_acc/len(val_loader)
+        scheduler.step(val_avg_acc)
         val_avg_indy = avg_indy_acc/len(val_loader)
         stats_string += "Val - Loss:{:.5f} | Acc:{:.5f} | Indy:{:.5f}\n"
         stats_string = stats_string.format(val_avg_loss,val_avg_acc,
@@ -280,7 +293,8 @@ def train(hyps, verbose=True):
             "state_dict":model.state_dict(),
             "optim_dict":optimizer.state_dict(),
             "word2idx":train_data.word2idx,
-            "idx2word":train_data.idx2word
+            "idx2word":train_data.idx2word,
+            "sampled_types":train_data.sampled_types
         }
         save_name = "checkpt"
         save_name = os.path.join(hyps['save_folder'],save_name)
@@ -296,6 +310,22 @@ def train(hyps, verbose=True):
     del save_dict['hyps']
     save_dict['save_folder'] = hyps['save_folder']
     return save_dict
+
+def save_data_structs(hyps, structs):
+    """
+    Records a copy of the data structs that were used to create this
+    dataset
+
+    structs: list of samp_structs
+        see the datas.WordProblem class for details on sample structs
+    """
+    sf = hyps['save_folder']
+    if not os.path.exists(sf):
+        os.mkdir(sf)
+    h = "samp_structs.json"
+    with open(os.path.join(sf,h),'w') as f:
+        json.dump(structs, f)
+
 
 def mask_words(x,y,mask_p=.15,mask_idx=0):
     """
