@@ -7,6 +7,7 @@ import os
 import torch.nn.functional as F
 import sencoder as sen
 import matplotlib.pyplot as plt
+import crab.custom_modules as crabmods
 
 DEVICE_DICT = {-1:"cpu", 0:"cuda:0"}
 
@@ -147,13 +148,14 @@ class Transformer(TransformerBase):
 
         self.embeddings = nn.Embedding(self.n_vocab, self.emb_size)
 
-        self.encoder = Encoder(self.enc_slen,emb_size=self.emb_size,
+        self.encoder = crabmods.Encoder(self.enc_slen,
+                                            emb_size=self.emb_size,
                                             attn_size=self.attn_size,
                                             n_layers=self.enc_layers,
                                             n_heads=self.n_heads,
                                             use_mask=self.enc_mask,
                                             act_fxn=self.act_fxn)
-        self.decoder = Decoder(self.dec_slen,self.emb_size,
+        self.decoder = crabmods.Decoder(self.dec_slen,self.emb_size,
                                             self.attn_size,
                                             self.dec_layers,
                                             n_heads=self.n_heads,
@@ -185,385 +187,6 @@ class Transformer(TransformerBase):
         decs = decs.reshape(-1,decs.shape[-1])
         preds = self.classifier(decs)
         return preds.reshape(len(y),y.shape[1],preds.shape[-1])
-
-class PositionalEncoder(nn.Module):
-    def __init__(self, seq_len, emb_size):
-        """
-        Creates an additive to ensure the positional information of
-        the words is known to the transformer
-
-        seq_len: int
-            the length of the sequence
-        emb_size: int
-            the dimensionality of the embeddings
-        """
-        super().__init__()
-        pos_enc = self.get_pos_encoding(seq_len,emb_size)
-        self.register_buffer('pos_enc',pos_enc)
-        self.seq_len = seq_len
-        self.emb_size = emb_size
-        self.pos_enc.requires_grad = False
-
-    def forward(self, x):
-        return self.pos_enc[:x.shape[1]] + x
-
-    def get_pos_encoding(self,seq_len, emb_size):
-        """
-        seq_len: int
-            the length of the sequences to be analyzed
-        emb_size: int
-            the size of the embeddings
-
-        Returns:
-            pos_enc: tensor (seq_len, emb_size)
-                the positional encodings to be summed with the input
-                matrix
-        """
-        pos_enc = torch.arange(seq_len)[:,None].expand(seq_len,emb_size)
-        scaling = torch.arange(emb_size//2)[None].repeat(2,1)
-        scaling = scaling.transpose(1,0).reshape(-1).float()
-        scaling = 10000**(scaling/emb_size)
-        pos_enc = pos_enc.float()/scaling
-        pos_enc[:,::2] = torch.sin(pos_enc[:,::2])
-        pos_enc[:,1::2] = torch.cos(pos_enc[:,1::2])
-        return pos_enc
-
-class MultiHeadAttention(nn.Module):
-    def __init__(self, emb_size, attn_size, n_heads=8):
-        """
-        emb_size: int
-            the size of the embeddings
-        attn_size: int
-            the size of the projected spaces in the attention layers
-        n_heads: int
-            the number of attention heads
-        """
-        super().__init__()
-        self.emb_size = emb_size
-        self.attn_size = attn_size
-        self.n_heads = n_heads
-
-        xavier_scale = np.sqrt((emb_size + attn_size*n_heads)/2)
-        w_q = torch.randn(emb_size, attn_size*n_heads)/xavier_scale
-        self.w_q = nn.Parameter(w_q)
-        w_k = torch.randn(emb_size, attn_size*n_heads)/xavier_scale
-        self.w_k = nn.Parameter(w_k)
-        w_v = torch.randn(emb_size, attn_size*n_heads)/xavier_scale
-        self.w_v = nn.Parameter(w_v)
-
-        self.outs = nn.Linear(attn_size*n_heads, emb_size)
-
-    def forward(self, q, k, v, mask=None):
-        """
-        q: tensor (B,S,E)
-            the queries
-        k: tensor (B,S,E)
-            the keys
-        v: tensor (B,S,E)
-            the values
-        mask: tensor (S,S)
-            a binary mask that indicates which values should be zeroed
-            in the attention score matrix. A mask of lower left 1s
-            with 1s along the diagonal and 0s in the upper right
-            triangle of the SxS square will act as a no-peaking mask.
-        """
-        fq = torch.matmul(q, self.w_q) # (B,S,H*A)
-        fk = torch.matmul(k, self.w_k) # (B,S,H*A)
-        fv = torch.matmul(v, self.w_v) # (B,S,H*A)
-
-        batch,seq_q = q.shape[:2]
-        fq = fq.reshape(batch, seq_q, self.n_heads, self.attn_size) 
-        fq = fq.permute(0,2,1,3) # (B,H,Sq, A)
-        batch,seq_k = k.shape[:2]
-        fk = fk.reshape(batch, seq_k, self.n_heads, self.attn_size) 
-        fk = fk.permute(0,2,3,1) # (B,H,A,Sk)
-        # seq_k should always be equal to seq_v
-        fv = fv.reshape(batch, seq_k, self.n_heads, self.attn_size) 
-        fv = fv.permute(0,2,1,3) # (B,H,Sk,A)
-
-        f = torch.matmul(fq,fk)/np.sqrt(self.attn_size) # (B,H,Sq,Sk)
-        if mask is not None:
-            device = DEVICE_DICT[f.get_device()]
-            zeros = torch.zeros(f.shape[-2:]).to(device)
-            f = f + zeros.masked_fill(mask==0,-1e9)
-        ps = F.softmax(f,dim=-1) # (B,H,Sq,Sk) ps along Sk
-        attns = torch.matmul(ps,fv) # (B,H,Sq,A)
-        attns = attns.permute(0,2,1,3) # (B,Sq,H,A)
-        attns = attns.reshape(batch,seq_q,-1)
-        return self.outs(attns)
-
-class EncodingBlock(nn.Module):
-    def __init__(self, emb_size, attn_size, n_heads=8,
-                                            act_fxn="ReLU"):
-        """
-        emb_size: int
-            the size of the embeddings
-        attn_size: int
-            the size of the projected spaces in the attention layers
-        n_heads: int
-            the number of attention heads
-        act_fxn: str
-            the name of the activation function to be used with the
-            MLP
-        """
-        super().__init__()
-        self.emb_size = emb_size
-        self.attn_size = attn_size
-        self.n_heads = n_heads
-
-        self.norm0 = nn.LayerNorm((emb_size,))
-        self.multi_attn = MultiHeadAttention(emb_size=emb_size,
-                                             attn_size=attn_size,
-                                             n_heads=n_heads)
-        self.norm1 = nn.LayerNorm((emb_size,))
-        self.fwd_net = nn.Sequential(nn.Linear(emb_size, emb_size),
-                                     globals()[act_fxn](),
-                                     nn.Linear(emb_size,emb_size))
-        self.norm2 = nn.LayerNorm((emb_size,))
-
-    def forward(self, x, mask=None):
-        """
-        x: torch FloatTensor (B,S,E)
-            batch by seq length by embedding size
-        mask: torch float tensor (optional)
-            if a mask is argued, it is applied to the attention values
-            to prevent information contamination
-        """
-        x = self.norm0(x)
-        fx = self.multi_attn(q=x,k=x,v=x,mask=mask)
-        fx = self.norm1(fx+x)
-        fx = self.fwd_net(fx)
-        fx = self.norm2(fx+x)
-        return fx
-
-class Encoder(nn.Module):
-    def __init__(self, seq_len, emb_size, attn_size, n_layers,n_heads,
-                                                     use_mask=False,
-                                                     act_fxn="ReLU"):
-        """
-        seq_len: int
-            the length of the sequences to be analyzed
-        emb_size: int
-            the size of the embeddings
-        attn_size: int
-            the size of the projected spaces in the attention layers
-        n_layers: int
-            the number of encoding layers
-        n_heads: int
-            the number of attention heads
-        use_mask: bool
-            if true, creates a mask to prevent the model from peaking
-            ahead
-        act_fxn: str
-            the name of the activation function to be used with the
-            MLP
-        """
-        super().__init__()
-        self.seq_len = seq_len
-        self.emb_size = emb_size
-        self.attn_size = attn_size
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        self.act_fxn = act_fxn
-        self.use_mask = use_mask
-
-        self.pos_encoding = PositionalEncoder(seq_len, emb_size)
-        mask = self.get_mask(x.shape[1]) if self.use_mask else None
-        self.register_buffer("mask",mask)
-        self.enc_layers = nn.ModuleList([])
-        for _ in range(n_layers):
-            block = EncodingBlock(emb_size=emb_size,
-                                  attn_size=attn_size,
-                                  n_heads=n_heads,
-                                  act_fxn=act_fxn)
-            self.enc_layers.append(block)
-
-    def forward(self,x,ret_all=False):
-        """
-        x: torch FloatTensor (B,S,E)
-            batch by seq length by embedding size
-        ret_all: bool
-            if true, will return all intermediate encodings as a list
-        """
-        if x.shape[1] != self.seq_len:
-            mask = self.get_mask(x.shape[1])
-        else:
-            mask = self.mask
-        fx = self.pos_encoding(x)
-        intrmds = []
-        for enc in self.enc_layers:
-            fx = enc(fx,mask=mask)
-            intrmds.append(fx)
-        if ret_all:
-            return intrmds
-        return fx
-
-    def get_mask(self, seq_len):
-        tri = np.tri(seq_len,seq_len)
-        return torch.FloatTensor(tri)
-
-class DecodingBlock(nn.Module):
-    def __init__(self, emb_size, attn_size, n_heads=8,
-                                                     act_fxn="ReLU"):
-        """
-        emb_size: int
-            the size of the embeddings
-        attn_size: int
-            the size of the projected spaces in the attention layers
-        n_heads: int
-            the number of attention heads
-        act_fxn: str
-            the name of the activation function to be used with the
-            MLP
-        """
-        super().__init__()
-        self.emb_size = emb_size
-        self.attn_size = attn_size
-
-        self.norm0 = nn.LayerNorm((emb_size,))
-        self.multi_attn1 = MultiHeadAttention(emb_size=emb_size,
-                                              attn_size=attn_size,
-                                              n_heads=n_heads)
-        self.norm1 = nn.LayerNorm((emb_size,))
-
-        self.multi_attn2 = MultiHeadAttention(emb_size=emb_size,
-                                              attn_size=attn_size,
-                                              n_heads=n_heads)
-        self.norm2 = nn.LayerNorm((emb_size,))
-
-        self.fwd_net = nn.Sequential(nn.Linear(emb_size, emb_size),
-                                     globals()[act_fxn](),
-                                     nn.Linear(emb_size,emb_size))
-        self.norm3 = nn.LayerNorm((emb_size,))
-
-    def forward(self, x, encs, dec_mask=None, enc_mask=None):
-        """
-        x: torch FloatTensor (B,S,E)
-            batch by seq length by embedding size
-        encs: torch FloatTensor (B,S,E)
-            batch by seq length by embedding size of encodings
-        """
-
-        fx = self.multi_attn1(q=x,k=x,v=x,mask=dec_mask)
-        fx = self.norm1(fx+x)
-        fx = self.multi_attn2(q=fx,k=encs,v=encs,mask=enc_mask)
-        fx = self.norm2(fx+x)
-        fx = self.fwd_net(fx)
-        fx = self.norm3(fx+x)
-        return fx
-
-class Decoder(nn.Module):
-    def __init__(self, seq_len, emb_size, attn_size, n_layers,
-                                                     n_heads,
-                                                     use_mask=False,
-                                                     act_fxn="ReLU",
-                                                     gen_decs=False):
-        """
-        seq_len: int
-            the length of the sequences to be analyzed
-        emb_size: int
-            the size of the embeddings
-        attn_size: int
-            the size of the projected spaces in the attention layers
-        n_layers: int
-            the number of encoding layers
-        n_heads: int
-            the number of attention heads
-        use_mask: bool
-            if true, a no-peak mask is applied so that elements later
-            in the decoding sequence are hidden from elements earlier
-            in the decoding
-        gen_decs: bool
-            if true, decodings are generated individually and used
-            as the inputs for later decodings. (stands for generate
-            decodings). This ensures earlier attention values are
-            completely unaffected by later inputs.
-        """
-        super().__init__()
-        self.seq_len = seq_len
-        self.emb_size = emb_size
-        self.attn_size = attn_size
-        self.n_layers = n_layers
-        self.n_heads = n_heads
-        self.act_fxn = act_fxn
-        self.use_mask = use_mask
-        self.gen_decs = gen_decs
-
-        mask = self.get_mask(seq_len,bidirectional=False) if use_mask\
-                                                            else None
-        self.register_buffer("mask", mask)
-        self.pos_encoding = PositionalEncoder(seq_len+1, emb_size)
-        self.dec_layers = nn.ModuleList([])
-        for _ in range(n_layers):
-            block = DecodingBlock(emb_size=emb_size,
-                                  attn_size=attn_size,
-                                  n_heads=n_heads,
-                                  act_fxn=act_fxn)
-            self.dec_layers.append(block)
-
-    def forward(self, x, encs, ret_all=False):
-        """
-        x: torch tensor (B,S,E)
-            the decoding embeddings
-        encs: torch tensor (B,S,E)
-            the output from the encoding stack
-        ret_all: bool
-            if true, returns all intermediate decodings
-        """
-        if self.gen_decs:
-            return self.gen_dec_fwd(x,encs,ret_all)
-        else:
-            if x.shape[1] != self.seq_len:
-                mask = self.get_mask(x.shape[1])
-            else:
-                mask = self.mask
-            fx = self.pos_encoding(x)
-            intrmds = []
-            for dec in self.dec_layers:
-                fx = dec(fx,encs,dec_mask=self.mask)
-                intrmds.append(fx)
-            if ret_all:
-                return intrmds
-            return fx
-
-    def gen_dec_fwd(self, x, encs, ret_all=False):
-        """
-        x: torch tensor (B,S,E)
-            the decoding embeddings
-        encs: torch tensor (B,S,E)
-            the output from the encoding stack
-        ret_all: bool
-            not currently implemented
-        """
-        assert ret_all == False
-        fx = x[:,:1]
-        outputs = [fx]
-        for i in range(x.shape[1]-1):
-            fx = self.pos_encoding(fx)
-            for dec in self.dec_layers:
-                fx = dec(fx,encs,dec_mask=None)
-            outputs.append(fx[:,-1:])
-            fx = torch.cat(outputs,dim=1)
-        return fx
-
-    def get_mask(self, seq_len, bidirectional=False):
-        """
-        Returns a diagonal mask to prevent the transformer from looking
-        at the word it is trying to predict.
-
-        seq_len: int
-            the length of the sequence
-        bidirectional: bool
-            if true, then the decodings will see everything but the
-            current token.
-        """
-        if bidirectional:
-            mask = torch.ones(seq_len,seq_len)
-            mask[range(seq_len),range(seq_len)] = 0
-            return torch.FloatTensor(mask)
-        else:
-            tri = np.tri(seq_len,seq_len)
-            return torch.FloatTensor(tri)
 
 class Classifier(nn.Module):
     def __init__(self, emb_size, n_vocab, h_size, bnorm=True,
@@ -875,7 +498,8 @@ class TransAutoencoder(TransformerBase):
 
         self.embeddings = nn.Embedding(self.n_vocab, self.emb_size)
 
-        self.encoder = Encoder(self.enc_slen, emb_size=self.emb_size,
+        self.encoder = crabmods.Encoder(self.enc_slen,
+                                             emb_size=self.emb_size,
                                              attn_size=self.attn_size,
                                              n_layers=self.enc_layers,
                                              n_heads=self.n_heads,
@@ -906,7 +530,7 @@ class TransAutoencoder(TransformerBase):
                                           attn_size=self.attn_size,
                                           n_heads=self.n_heads)
 
-        self.decoder = Decoder(self.dec_slen, self.emb_size,
+        self.decoder = crabmods.Decoder(self.dec_slen, self.emb_size,
                                              self.attn_size,
                                              self.dec_layers,
                                              n_heads=self.n_heads,
@@ -960,7 +584,8 @@ class Codt(TransformerBase):
 
         self.embeddings = nn.Embedding(self.n_vocab, self.emb_size)
 
-        self.encoder = Encoder(self.enc_slen,emb_size=self.emb_size,
+        self.encoder = crabmods.Encoder(self.enc_slen,
+                                             emb_size=self.emb_size,
                                              attn_size=self.attn_size,
                                              n_layers=self.enc_layers,
                                              n_heads=self.n_heads,
@@ -968,7 +593,7 @@ class Codt(TransformerBase):
                                              act_fxn=self.act_fxn)
         self.collapse_init = torch.randn(1,1,self.emb_size)
         self.collapse_init = nn.Parameter(self.collapse_init)
-        self.collapser = Decoder(self.collapse_size,
+        self.collapser = crabmods.Decoder(self.collapse_size,
                                  emb_size=self.emb_size,
                                  attn_size=self.attn_size,
                                  n_layers=3,
@@ -976,12 +601,12 @@ class Codt(TransformerBase):
                                  use_mask=False,
                                  act_fxn=self.act_fxn)
 
-        self.decoder = Decoder(self.dec_slen,self.emb_size,
+        self.decoder = crabmods.Decoder(self.dec_slen,self.emb_size,
                                              self.attn_size,
                                              self.dec_layers,
                                              n_heads=self.n_heads,
                                              act_fxn=self.act_fxn)
-        self.decode_init = torch.randn(1,self.dec_slen,self.emb_size)
+        self.decode_init = torch.randn(1,1,self.emb_size)
         self.decode_init = nn.Parameter(self.decode_init)
 
         self.classifier = Classifier(self.emb_size,
@@ -1003,7 +628,7 @@ class Codt(TransformerBase):
         init = self.collapse_init.repeat((len(x),self.collapse_size,1))
         encs = self.collapser(init, encs)
         encs = self.collapse_dropout(encs)
-        init = self.decode_init.repeat((len(x),1,1))
+        init = self.decode_init.repeat((len(x),self.dec_slen,1))
         decs = self.decoder(init, encs)
         decs = self.dec_dropout(decs)
         shape = decs.shape
