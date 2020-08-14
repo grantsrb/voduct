@@ -27,208 +27,6 @@ def rand_sample(arr, n_samples=1):
     if len(samples) == 1: return samples[0]
     return samples
 
-class Tokenizer():
-    """
-    This class assists in tokenizing the data and converting between
-    indices and tokens.
-    """
-    def __init__(self, X=None, Y=None, word2idx=None,
-                                       idx2word=None,
-                                       split_digits=False,
-                                       MASK="<MASK>",
-                                       START="<START>",
-                                       STOP="<STOP>",
-                                       INIT="<INIT>",
-                                       seq_len_x=None,
-                                       seq_len_y=None,
-                                       prepend=False,
-                                       append=False,
-                                       index=True,
-                                       strings=None,
-                                       verbose=True):
-        """
-        X: list of strings
-            these are the strings that will be tokenized and indexed.
-            if None is argued, the word2idx and idx2word must not be
-            None
-        Y: list of strings
-            these are another list of strings that will be tokenized
-            and indexed. the words in Y will be be included in the 
-            vocabulary if word2idx and idx2word are None
-        word2idx: dict
-            keys: str
-                the words or tokens
-            values: int
-                the integer indices corresponding to each token
-        idx2word: dict
-            keys: int
-                the integer indices corresponding to each token
-            values: str
-                the words or tokens corresponding to each index
-        split_digits: bool
-            option to split each digit into a sequence of individual
-            digits 0-9
-        MASK: str
-            the token to correspond to the null embedding
-        START: str
-            the token to correspond to the START embedding
-        STOP: str
-            the token to correspond to the STOP embedding
-        INIT: str
-            a token that optionally all decoding inputs begin with
-        seq_len_x: int or None
-            if None, then the maximum length of the tokenized X
-            will be used for the X sequence length
-        seq_len_y: int or None
-            if None, then the maximum length of the tokenized Y
-            will be used for the Y sequence length
-        prepend: bool
-            if true, self.START is prepended to the start of the tokens
-        append: bool
-            if true, self.STOP is appended to the end of the tokens
-        index: bool
-            if true, the tokens are also converted to indices
-        strings: list of str
-            each string in the argued list is included in the conversion
-            dictionaries word2idx and idx2word
-        """
-        self.MASK = MASK
-        self.START = START
-        self.STOP = STOP
-        self.INIT = INIT
-        self.string_X = X
-        self.string_Y = Y
-        self.split_digits = split_digits
-        if split_digits:
-            words = set([str(i) for i in range(10)])
-        else:
-            words = set([str(i) for i in range(100)])
-
-        x_max_len = 0
-        y_max_len = 0
-        tok_x = []
-        tok_y = []
-        if X is not None or Y is not None:
-            if verbose:
-                print("Tokenizing")
-            if X is not None:
-                tok_x,x_max_len,words = self.tokenize(X,words=words,
-                                                        verbose=verbose)
-            if Y is not None:
-                tok_y,y_max_len,words = self.tokenize(Y, words=words,
-                                                        verbose=verbose)
-        self.token_X = tok_x
-        self.token_Y = tok_y
-        if word2idx is None:
-            word2idx = {w:i+1 for i,w in enumerate(words)}
-            word2idx[self.MASK] = 0
-        if idx2word is None:
-            idx2word = {i+1:w for i,w in enumerate(words)}
-            idx2word[0] = self.MASK
-        if strings is not None:
-            for s in strings:
-                if s not in word2idx:
-                    idx = len(word2idx)
-                    word2idx[s] = idx
-                    idx2word[idx] = s
-        if self.START not in word2idx:
-            word2idx[self.START] = len(word2idx)
-            idx2word[word2idx[self.START]] = self.START
-        if self.STOP not in word2idx:
-            word2idx[self.STOP] = len(word2idx)
-            idx2word[word2idx[self.STOP]] = self.STOP
-        if self.INIT not in word2idx:
-            word2idx[self.INIT] = len(word2idx)
-            idx2word[word2idx[self.INIT]] = self.INIT
-        self.INIT_IDX = word2idx[self.INIT]
-        self.word2idx = word2idx
-        self.idx2word = idx2word
-        self.seq_len_x = x_max_len+prepend+append if seq_len_x is None\
-                                                        else seq_len_x
-
-        if len(tok_x) > 0 and index:
-            if verbose:
-                print("Converting to integer indexes")
-            self.X = self.index_tokens(tok_x, self.seq_len_x,
-                                              prepend=prepend,
-                                              append=append)
-        self.seq_len_y = y_max_len+prepend+append if seq_len_y is None\
-                                                        else seq_len_y
-        if len(tok_y) > 0 and index:
-            if verbose:
-                print("Converting to integer indexes")
-            self.seq_len_y = seq_len_y
-            self.Y = self.index_tokens(tok_y, seq_len_y,
-                                              prepend=prepend,
-                                              append=append)
-        self.inits = [self.INIT for i in range(self.seq_len_y)]
-        self.inits = self.index_tokens([self.inits],
-                                            seq_len_y,
-                                            prepend=prepend,
-                                            append=False)
-
-    def tokenize(self, lostr, words=None, split_digits=None,
-                                          verbose=False):
-        """
-        lostr: list of str
-            a list of strings to be tokenized
-        words: optional set of str
-            the current word set. if none, a new set is created
-        split_digits: bool or None
-            if none, self.split_digits is used
-        """
-        max_len = 0
-        if words is None:
-            words = set()
-        if split_digits is None:
-            split_digits = self.split_digits
-        toks = []
-        for i in range(len(lostr)):
-            toks.append(tk.tokenize(lostr[i],
-                        split_digits=split_digits))
-            words = words | set(toks[i])
-            max_len = max(max_len,len(toks[i]))
-            if verbose:
-                print(round(float(i)/len(lostr)*100),"%", end="    \r")
-        return toks,max_len,words
-
-    def index_tokens(self, toks, seq_len, prepend=False,
-                                          append=False,
-                                          verbose=True):
-        """
-        Used to convert tokens to indices
-
-        toks: list of lists of str (N, variable)
-            the tokens to be indexed
-        seq_len: int
-            the length of the sequence
-        prepend: bool
-            if true, self.START is prepended to the start of the tokens
-        append: bool
-            if true, self.STOP is appended to the end of the tokens
-        """
-        if seq_len is None:
-            seq_len = len(toks[0])+prepend+append
-        X = torch.zeros(len(toks),seq_len).long()
-        for i in range(len(toks)):
-            if prepend: X[i,0] = self.word2idx[self.START]
-            for j,x in enumerate(toks[i]):
-                if j < seq_len-prepend:
-                    try:
-                        X[i,j+prepend] = self.word2idx[x]
-                    except:
-                        s = "Key error using {}, adding {} to dicts"
-                        print(s.format(x,x))
-                        idx = len(self.word2idx)
-                        self.word2idx[x] = idx
-                        self.idx2word[idx] = x
-                        X[i,j+prepend] = self.word2idx[x]
-            if append:
-                X[i,min(j+1+prepend,seq_len-1)]=self.word2idx[self.STOP]
-            if verbose:
-                print(round(float(i)/len(toks)*100),"%", end="    \r")
-        return X
-
 class WordProblems(Dataset):
     def __init__(self, difficulty="easy", lowercase=True,
                                           n_samples=10000,
@@ -277,7 +75,7 @@ class WordProblems(Dataset):
                 the corresponding proportion of samples that should be
                 this type of sample
         """
-        self.tokenizer = Tokenizer()
+        self.tokenizer = tk.Tokenizer()
         self.lowercase = lowercase
         if "exp_name" in kwargs and kwargs['exp_name']=="test":
             n_samples = 100
@@ -351,7 +149,7 @@ class WordProblems(Dataset):
         self.questions = questions
         self.answers = answers
         extras = self.colors+self.shapes
-        self.tokenizer = Tokenizer(X=questions,
+        self.tokenizer = tk.Tokenizer(X=questions,
                                    Y=answers,
                                    split_digits=self.split_digits,
                                    index=False,
@@ -1196,6 +994,70 @@ class SentenceJournal(Dataset):
 
         assert len(X) == len(Y)
         return X, Y, word2idx, idx2word
+    
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.Y[idx]
+
+class TextFile(Dataset):
+    def __init__(self, txt_path, seq_len=100, lowercase=False,
+                                                  **kwargs):
+        self.txt_path = txt_path
+        self.lowercase = lowercase
+
+        tok_X,tok_Y = self.get_data(txt_path,seq_len,lowercase)
+        self.tok_X = tok_X # (N, SeqLen)
+        self.tok_Y = tok_Y # (N, SeqLen)
+        self.tokenizer = tk.Tokenizer(tok_X=tok_X, tok_Y=tok_Y,
+                                   split_digits=True,
+                                   index=index,
+                                   prepend=True,
+                                   strings=extras,
+                                   append=True,
+                                   seq_len_x=seq_len+2,
+                                   seq_len_y=seq_len+2)
+        self.X = self.tokenizer.X
+        self.Y = self.tokenizer.Y
+        # Legacy stuff
+        self.questions = self.tokenizer.string_X
+        self.answers = self.tokenizer.string_Y
+        self.token_qs = self.tokenizer.token_X
+        self.token_ans = self.tokenizer.token_Y
+
+    def get_data(self, txt_path, seq_len, lowercase, **kwargs):
+        """
+        txt_path: str
+            path to .txt file
+        seq_len: int
+            length of sequences
+        lowercase: bool
+            if true, all characters are made lowercase
+        """
+        # Get and prepare data
+        data_path = os.path.expanduser(txt_path)
+        data = open(data_path, 'r')
+    
+        text = data.read()
+        data.close()
+        if lowercase:
+            text = text.lower()
+        text = tk.tokenize(text, split_digits=True)
+
+        tok_X = []
+        tok_Y = []
+        tempx = []
+        tempy = []
+        for i,tok in enumerate(text[:-1]):
+            j = i+1
+            tempx.append(tok)
+            tempy.append(text[j])
+            if i % seq_len == 0 or i == len(text)-2:
+                tok_X.append(tempx)
+                tok_Y.append(tempy)
+    
+        return tok_X, tok_Y
     
     def __len__(self):
         return len(self.X)
