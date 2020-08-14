@@ -1006,16 +1006,18 @@ class TextFile(Dataset):
                                                   **kwargs):
         self.txt_path = txt_path
         self.lowercase = lowercase
+        self.seq_len = seq_len
 
-        tok_X,tok_Y = self.get_data(txt_path,seq_len,lowercase)
+        tok_X,tok_Y,words = self.get_data(txt_path,seq_len,lowercase)
         self.tok_X = tok_X # (N, SeqLen)
         self.tok_Y = tok_Y # (N, SeqLen)
         self.tokenizer = tk.Tokenizer(tok_X=tok_X, tok_Y=tok_Y,
                                    split_digits=True,
-                                   index=index,
+                                   index=True,
                                    prepend=True,
-                                   strings=extras,
+                                   strings=None,
                                    append=True,
+                                   words=words,
                                    seq_len_x=seq_len+2,
                                    seq_len_y=seq_len+2)
         self.X = self.tokenizer.X
@@ -1043,7 +1045,8 @@ class TextFile(Dataset):
         data.close()
         if lowercase:
             text = text.lower()
-        text = tk.tokenize(text, split_digits=True)
+        text = tk.tokenize(text, split_digits=True, lowercase=True)
+        words = set(text)
 
         tok_X = []
         tok_Y = []
@@ -1056,8 +1059,7 @@ class TextFile(Dataset):
             if i % seq_len == 0 or i == len(text)-2:
                 tok_X.append(tempx)
                 tok_Y.append(tempy)
-    
-        return tok_X, tok_Y
+        return tok_X, tok_Y, words
     
     def __len__(self):
         return len(self.X)
