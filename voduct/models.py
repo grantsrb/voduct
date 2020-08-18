@@ -566,7 +566,9 @@ class TransAutoencoder(TransformerBase):
 class Codt(TransformerBase):
     """
     this is an experimental model to prove that the basic idea of
-    minimal supervision transformers can learn compression
+    minimal supervision transformers can learn compression. Collapsing
+    is performed using a decoding module with a learned initialization
+    vector
     """
     def __init__(self, collapse_size=1, collapse_layers=3,
                                         *args, **kwargs):

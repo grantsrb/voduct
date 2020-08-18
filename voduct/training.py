@@ -107,7 +107,6 @@ def train(hyps, verbose=True):
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
             preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
-            print("preds", preds.shape)
             if epoch % 3 == 0 and b == 0:
                 ms = torch.argmax(preds,dim=-1)
                 print("y:",[idx2word[a.item()] for a in y[0]])
