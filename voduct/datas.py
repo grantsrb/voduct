@@ -1098,7 +1098,8 @@ class TextFile(Dataset):
         self.lowercase = lowercase
         self.seq_len = seq_len
 
-        tok_X,tok_Y,words = self.get_data(txt_path,seq_len,lowercase)
+        tok_X,tok_Y,words = self.get_data(txt_path,seq_len,lowercase,
+                                                           **kwargs)
         self.tok_X = tok_X # (N, SeqLen)
         self.tok_Y = tok_Y # (N, SeqLen)
         self.tokenizer = tk.Tokenizer(tok_X=tok_X, tok_Y=tok_Y,
@@ -1117,6 +1118,31 @@ class TextFile(Dataset):
         self.answers = self.tokenizer.string_Y
         self.token_qs = self.tokenizer.token_X
         self.token_ans = self.tokenizer.token_Y
+
+    @property
+    def inits(self):
+        return self.tokenizer.inits
+    @property
+    def word2idx(self):
+        return self.tokenizer.word2idx
+    @property
+    def idx2word(self):
+        return self.tokenizer.idx2word
+    @property
+    def MASK(self):
+        return self.tokenizer.MASK
+    @property
+    def START(self):
+        return self.tokenizer.START
+    @property
+    def STOP(self):
+        return self.tokenizer.STOP
+    @property
+    def seq_len_x(self):
+        return self.tokenizer.seq_len_x
+    @property
+    def seq_len_y(self):
+        return self.tokenizer.seq_len_y
 
     def get_data(self, txt_path, seq_len, lowercase, **kwargs):
         """
@@ -1138,6 +1164,7 @@ class TextFile(Dataset):
         text = tk.tokenize(text, split_digits=True, lowercase=True)
         words = set(text)
 
+        testing = "exp_name" in kwargs and kwargs['exp_name']=="test"
         tok_X = []
         tok_Y = []
         tempx = []
@@ -1149,6 +1176,8 @@ class TextFile(Dataset):
             if i % seq_len == 0 or i == len(text)-2:
                 tok_X.append(tempx)
                 tok_Y.append(tempy)
+                if testing and len(tempx) > 20:
+                    break
         return tok_X, tok_Y, words
     
     def __len__(self):
@@ -1226,18 +1255,18 @@ def get_data(seq_len=10, shuffle_split=False,
                                Y=dataset.Y[val_idxs],
                                word2idx=word2idx,
                                idx2word=idx2word)
-
-    kwargs = dict()
-    if hasattr(dataset, "samp_structs")
-    kwargs = {"sample_structs":dataset.samp_structs,
-              "sampled_types":dataset.sampled_types}
-    dataset = EmptyDataset(X=dataset.X[train_idxs],
-                           Y=dataset.Y[train_idxs],
-                           word2idx=word2idx,
-                           idx2word=idx2word,
-                           inits=dataset.inits,
-                           sample_structs=dataset.samp_structs,
-                           sampled_types=dataset.sampled_types)
+    kwargs = {"X":dataset.X[train_idxs],
+              "Y":dataset.Y[train_idxs],
+              "word2idx":word2idx,
+              "idx2word":idx2word,
+              "inits":dataset.inits,
+              "sample_structs":None,
+              "sampled_types":None}
+    if hasattr(dataset,"samp_structs"): 
+        kwargs['sample_structs'] = dataset.samp_structs
+    if hasattr(dataset,"sampled_types"): 
+        kwargs['sampled_types'] = dataset.sampled_types
+    dataset = EmptyDataset(**kwargs)
     return dataset, val_dataset
 
 
