@@ -49,9 +49,8 @@ def train(hyps, verbose=True):
     if "shuffle_split" not in hyps and hyps['shuffle']:
         hyps['shuffle_split'] = True
     train_data,val_data = datas.get_data(**hyps)
-    if train_data.X.shape[-1] != train_data.Y.shape[-1]:
-        hyps['enc_slen'] = train_data.X.shape[-1]
-        hyps['dec_slen'] = train_data.Y.shape[-1]
+    hyps['enc_slen'] = train_data.X.shape[-1]
+    hyps['dec_slen'] = train_data.Y.shape[-1]
     train_loader = torch.utils.data.DataLoader(train_data,
                                     batch_size=hyps['batch_size'],
                                     shuffle=hyps['shuffle'])
