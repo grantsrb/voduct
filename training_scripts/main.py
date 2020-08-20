@@ -42,9 +42,15 @@ if __name__ == "__main__":
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    main_path = hyps['exp_name']
+    if "save_root" in hyps:
+        hyps['save_root'] = os.path.expanduser(hyps['save_root'])
+        if not os.path.exists(hyps['save_root']):
+            os.mkdir(hyps['save_root'])
+        main_path = os.path.join(hyps['save_root'], main_path)
     sleep_time = 8
-    if os.path.exists(hyps['exp_name']):
-        _, subds, _ = next(os.walk(hyps['exp_name']))
+    if os.path.exists(main_path):
+        _, subds, _ = next(os.walk(main_path))
         dirs = []
         for d in subds:
             splt = d.split("_")
@@ -56,7 +62,7 @@ if __name__ == "__main__":
             print(s)
             i,_,_ = select.select([sys.stdin], [],[],sleep_time)
             if i and "y" in sys.stdin.readline().strip().lower():
-                path = os.path.join(hyps['exp_name'], dirs[-1])
+                path = os.path.join(main_path, dirs[-1])
                 shutil.rmtree(path, ignore_errors=True)
         else:
             s = "You have {} seconds to cancel experiment name {}:"

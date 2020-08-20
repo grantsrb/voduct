@@ -34,7 +34,7 @@ def train(hyps, verbose=True):
         contains all relavent hyperparameters
     """
     # Set manual seed
-    hyps['exp_num'] = get_exp_num(hyps['exp_name'])
+    hyps['exp_num'] = get_exp_num(hyps['main_path'], hyps['exp_name'])
     hyps['save_folder'] = get_save_folder(hyps)
     if not os.path.exists(hyps['save_folder']):
         os.mkdir(hyps['save_folder'])
@@ -347,15 +347,17 @@ def mask_words(x,y,mask_p=.15,mask_idx=0):
     y[mask] = mask_idx
     return x,y,mask
 
-def get_exp_num(exp_name):
+def get_exp_num(exp_folder, exp_name):
     """
     Finds the next open experiment id number.
 
-    exp_name: str
+    exp_folder: str
         path to the main experiment folder that contains the model
         folders
+    exp_name: str
+        the name of the experiment
     """
-    exp_folder = os.path.expanduser(exp_name)
+    exp_folder = os.path.expanduser(exp_folder)
     _, dirs, _ = next(os.walk(exp_folder))
     exp_nums = set()
     for d in dirs:
@@ -369,22 +371,6 @@ def get_exp_num(exp_name):
         if i not in exp_nums:
             return i
     return len(exp_nums)
-
-def get_save_folder(hyps):
-    """
-    Creates the save name for the model.
-
-    hyps: dict
-        keys:
-            exp_name: str
-            exp_num: int
-            search_keys: str
-    """
-    save_folder = "{}/{}_{}".format(hyps['exp_name'],
-                                    hyps['exp_name'],
-                                    hyps['exp_num'])
-    save_folder += hyps['search_keys']
-    return save_folder
 
 def record_session(hyps, model):
     """
@@ -422,7 +408,7 @@ def get_save_folder(hyps):
             exp_num: int
             search_keys: str
     """
-    save_folder = "{}/{}_{}".format(hyps['exp_name'],
+    save_folder = "{}/{}_{}".format(hyps['main_path'],
                                     hyps['exp_name'],
                                     hyps['exp_num'])
     save_folder += hyps['search_keys']
@@ -488,9 +474,16 @@ def hyper_search(hyps, hyp_ranges):
     """
     starttime = time.time()
     # Make results file
-    if not os.path.exists(hyps['exp_name']):
-        os.mkdir(hyps['exp_name'])
-    results_file = hyps['exp_name']+"/results.txt"
+    main_path = hyps['exp_name']
+    if "save_root" in hyps:
+        hyps['save_root'] = os.path.expanduser(hyps['save_root'])
+        if not os.path.exists(hyps['save_root']):
+            os.mkdir(hyps['save_root'])
+        main_path = os.path.join(hyps['save_root'], main_path)
+    if not os.path.exists(main_path):
+        os.mkdir(main_path)
+    hyps['main_path'] = main_path
+    results_file = os.path.join(main_path, "results.txt")
     with open(results_file,'a') as f:
         f.write("Hyperparameters:\n")
         for k in hyps.keys():
