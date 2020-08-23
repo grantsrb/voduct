@@ -34,7 +34,7 @@ def train(hyps, verbose=True):
         contains all relavent hyperparameters
     """
     # Set manual seed
-    hyps['exp_num'] = get_exp_num(hyps['exp_name'])
+    hyps['exp_num'] = get_exp_num(hyps['main_path'], hyps['exp_name'])
     hyps['save_folder'] = get_save_folder(hyps)
     if not os.path.exists(hyps['save_folder']):
         os.mkdir(hyps['save_folder'])
@@ -55,7 +55,8 @@ def train(hyps, verbose=True):
         hyps['shuffle_split'] = True
     train_data,val_data = datas.get_data(**hyps)
     hyps['enc_slen'] = train_data.X.shape[-1]
-    hyps['dec_slen'] = train_data.Y.shape[-1]
+    hyps['dec_slen'] = train_data.Y.shape[-1]-1
+    #if hyps[
     train_loader = torch.utils.data.DataLoader(train_data,
                                     batch_size=hyps['batch_size'],
                                     shuffle=hyps['shuffle'])
@@ -102,16 +103,17 @@ def train(hyps, verbose=True):
         for b,(x,y) in enumerate(train_loader):
             optimizer.zero_grad()
             if model.transformer_type == models.AUTOENCODER:
-                targs = x.clone()[:,1:].to(DEVICE)
+                targs = x.data.to(DEVICE)
             else:
-                targs = y.clone()[:,1:].to(DEVICE)
+                targs = y.data[:,1:].to(DEVICE)
+            y = y[:,:-1]
             og_shape = targs.shape
             idx2word = train_data.idx2word
             if hyps['init_decs']:
                 y = train_data.inits.clone().repeat(len(x),1)
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
-            preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
+            preds = model(x.to(DEVICE),y.to(DEVICE))
             if epoch % 3 == 0 and b == 0:
                 ms = torch.argmax(preds,dim=-1)
                 print("y:",[idx2word[a.item()] for a in y[0]])
@@ -197,17 +199,17 @@ def train(hyps, verbose=True):
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
                 if model.transformer_type == models.AUTOENCODER:
-                    targs = x.clone()[:,1:].to(DEVICE)
+                    targs = x.data[:,1:]
                 else:
-                    targs = y.clone()[:,1:].to(DEVICE)
+                    targs = y.data[:,1:]
+                y = y[:,:-1]
                 og_shape = targs.shape
                 targs = targs.reshape(-1)
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
                 if hyps['masking_task']:
-                    print("masking")
                     x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
-                preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
+                preds = model(x.to(DEVICE),y.to(DEVICE))
 
                 if hyps['masking_task']:
                     # Mask loss and acc
@@ -229,6 +231,7 @@ def train(hyps, verbose=True):
 
                 # Tot loss and acc
                 preds = preds.reshape(-1,preds.shape[-1])
+                targs = targs.to(DEVICE)
                 loss = lossfxn(preds,targs)
                 preds = torch.argmax(preds,dim=-1).reshape(og_shape)
                 targs = targs.reshape(og_shape)
@@ -352,15 +355,17 @@ def mask_words(x,y,mask_p=.15,mask_idx=0):
     y[mask] = mask_idx
     return x,y,mask
 
-def get_exp_num(exp_name):
+def get_exp_num(exp_folder, exp_name):
     """
     Finds the next open experiment id number.
 
-    exp_name: str
+    exp_folder: str
         path to the main experiment folder that contains the model
         folders
+    exp_name: str
+        the name of the experiment
     """
-    exp_folder = os.path.expanduser(exp_name)
+    exp_folder = os.path.expanduser(exp_folder)
     _, dirs, _ = next(os.walk(exp_folder))
     exp_nums = set()
     for d in dirs:
@@ -374,22 +379,6 @@ def get_exp_num(exp_name):
         if i not in exp_nums:
             return i
     return len(exp_nums)
-
-def get_save_folder(hyps):
-    """
-    Creates the save name for the model.
-
-    hyps: dict
-        keys:
-            exp_name: str
-            exp_num: int
-            search_keys: str
-    """
-    save_folder = "{}/{}_{}".format(hyps['exp_name'],
-                                    hyps['exp_name'],
-                                    hyps['exp_num'])
-    save_folder += hyps['search_keys']
-    return save_folder
 
 def record_session(hyps, model):
     """
@@ -427,7 +416,7 @@ def get_save_folder(hyps):
             exp_num: int
             search_keys: str
     """
-    save_folder = "{}/{}_{}".format(hyps['exp_name'],
+    save_folder = "{}/{}_{}".format(hyps['main_path'],
                                     hyps['exp_name'],
                                     hyps['exp_num'])
     save_folder += hyps['search_keys']
@@ -493,9 +482,16 @@ def hyper_search(hyps, hyp_ranges):
     """
     starttime = time.time()
     # Make results file
-    if not os.path.exists(hyps['exp_name']):
-        os.mkdir(hyps['exp_name'])
-    results_file = hyps['exp_name']+"/results.txt"
+    main_path = hyps['exp_name']
+    if "save_root" in hyps:
+        hyps['save_root'] = os.path.expanduser(hyps['save_root'])
+        if not os.path.exists(hyps['save_root']):
+            os.mkdir(hyps['save_root'])
+        main_path = os.path.join(hyps['save_root'], main_path)
+    if not os.path.exists(main_path):
+        os.mkdir(main_path)
+    hyps['main_path'] = main_path
+    results_file = os.path.join(main_path, "results.txt")
     with open(results_file,'a') as f:
         f.write("Hyperparameters:\n")
         for k in hyps.keys():
