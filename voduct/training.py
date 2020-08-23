@@ -43,6 +43,11 @@ def train(hyps, verbose=True):
     np.random.seed(hyps['seed'])
     model_class = hyps['model_class']
     hyps['model_type'] = models.TRANSFORMER_TYPE[model_class]
+    if not hyps['init_decs'] and not hyps['gen_decs'] and\
+                                not hyps['ordered_preds']:
+        s = "WARNING!! You probably want to set ordered preds to True "
+        s += "with your current configuration!!"
+        print(s)
 
     if verbose:
         print("Retreiving Dataset")
