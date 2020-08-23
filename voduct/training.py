@@ -50,7 +50,8 @@ def train(hyps, verbose=True):
         hyps['shuffle_split'] = True
     train_data,val_data = datas.get_data(**hyps)
     hyps['enc_slen'] = train_data.X.shape[-1]
-    hyps['dec_slen'] = train_data.Y.shape[-1]
+    hyps['dec_slen'] = train_data.Y.shape[-1]-1
+    #if hyps[
     train_loader = torch.utils.data.DataLoader(train_data,
                                     batch_size=hyps['batch_size'],
                                     shuffle=hyps['shuffle'])
@@ -97,16 +98,17 @@ def train(hyps, verbose=True):
         for b,(x,y) in enumerate(train_loader):
             optimizer.zero_grad()
             if model.transformer_type == models.AUTOENCODER:
-                targs = x.clone()[:,1:].to(DEVICE)
+                targs = x.data.to(DEVICE)
             else:
-                targs = y.clone()[:,1:].to(DEVICE)
+                targs = y.data[:,1:].to(DEVICE)
+            y = y[:,:-1]
             og_shape = targs.shape
             idx2word = train_data.idx2word
             if hyps['init_decs']:
                 y = train_data.inits.clone().repeat(len(x),1)
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
-            preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
+            preds = model(x.to(DEVICE),y.to(DEVICE))
             if epoch % 3 == 0 and b == 0:
                 ms = torch.argmax(preds,dim=-1)
                 print("y:",[idx2word[a.item()] for a in y[0]])
@@ -192,17 +194,17 @@ def train(hyps, verbose=True):
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
                 if model.transformer_type == models.AUTOENCODER:
-                    targs = x.clone()[:,1:].to(DEVICE)
+                    targs = x.data[:,1:]
                 else:
-                    targs = y.clone()[:,1:].to(DEVICE)
+                    targs = y.data[:,1:]
+                y = y[:,:-1]
                 og_shape = targs.shape
                 targs = targs.reshape(-1)
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
                 if hyps['masking_task']:
-                    print("masking")
                     x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
-                preds = model(x.to(DEVICE),y.to(DEVICE))[:,:-1]
+                preds = model(x.to(DEVICE),y.to(DEVICE))
 
                 if hyps['masking_task']:
                     # Mask loss and acc
@@ -224,6 +226,7 @@ def train(hyps, verbose=True):
 
                 # Tot loss and acc
                 preds = preds.reshape(-1,preds.shape[-1])
+                targs = targs.to(DEVICE)
                 loss = lossfxn(preds,targs)
                 preds = torch.argmax(preds,dim=-1).reshape(og_shape)
                 targs = targs.reshape(og_shape)
