@@ -1001,6 +1001,96 @@ class SentenceJournal(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
 
+class Nietzsche(Dataset):
+    def __init__(self, seq_len=10, lowercase=False, **kwargs):
+        file_name = "nietzsche.txt"
+        self.lowercase = lowercase
+        self.seq_len = seq_len
+        url = "https://s3.amazonaws.com/text-datasets/nietzsche.txt"
+        tup = self.get_data(file_name=file_name, url=url,
+                                         seq_len=seq_len,
+                                         lowercase=lowercase)
+        X,Y,word2idx,idx2word = tup
+        self.X = X # (N, SeqLen)
+        self.Y = Y # (N, SeqLen)
+        self.word2idx = word2idx
+        self.idx2word = idx2word
+        self.MASK="<MASK>",
+        self.START="<START>",
+        self.STOP="<STOP>",
+        self.INIT="<INIT>",
+        if self.INIT not in word2idx:
+            idx = len(word2idx)
+            word2idx[self.INIT] = idx
+            idx2word[idx] = self.INIT
+        if self.MASK not in word2idx:
+            idx = len(word2idx)
+            word2idx[self.MASK] = idx
+            idx2word[idx] = self.MASK
+        if self.START not in word2idx:
+            idx = len(word2idx)
+            word2idx[self.START] = idx
+            idx2word[idx] = self.START
+        if self.STOP not in word2idx:
+            idx = len(word2idx)
+            word2idx[self.STOP] = idx
+            idx2word[idx] = self.STOP
+        self.inits = [word2idx[self.INIT] for i in range(seq_len)]
+        self.inits = torch.LongTensor(self.inits)
+
+
+    def get_data(self, file_name, url, seq_len, lowercase, **kwargs):
+        """
+        file_name: str
+            path to pickle file
+        url: str
+            url to the data as used by keras.utils.data_utils.get_file
+        seq_len: int
+            length of sequences
+        lowercase: bool
+            if true, all characters are made lowercase
+        """
+        # Get and prepare data
+        data_path = get_file(file_name, origin=url)
+        data = open(data_path, 'r')
+    
+        text = data.read()
+        if lowercase:
+            text = text.lower()
+        text = tk.tokenize(text)
+        words = set(text)
+        print("Num unique words:", len(words))
+    
+        word2idx = {w:i for i,w in enumerate(words)}
+        idx2word = {i:w for i,w in enumerate(words)}
+    
+        X = [[word2idx[text[i+j]] for j in range(seq_len)]\
+                            for i in range(len(text)-seq_len-1)]
+        Y = [[word2idx[text[i+j]] for j in range(seq_len)]\
+                            for i in range(1,len(text)-seq_len)]
+        X = torch.LongTensor(X)
+        Y = torch.LongTensor(Y)
+
+        assert len(X) == len(Y)
+        return X, Y, word2idx, idx2word
+    
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.Y[idx]
+
+class EmptyDataset(Dataset):
+    def __init__(self, X, Y):
+        self.X = X
+        self.Y = Y
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.Y[idx]
+
 class TextFile(Dataset):
     def __init__(self, txt_path, seq_len=100, lowercase=False,
                                                   **kwargs):
@@ -1165,7 +1255,6 @@ def get_data(seq_len=10, shuffle_split=False,
                                Y=dataset.Y[val_idxs],
                                word2idx=word2idx,
                                idx2word=idx2word)
-
     kwargs = {"X":dataset.X[train_idxs],
               "Y":dataset.Y[train_idxs],
               "word2idx":word2idx,
