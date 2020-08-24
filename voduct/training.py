@@ -197,11 +197,11 @@ def train(hyps, verbose=True):
                     targs = x.data[:,1:]
                 else:
                     targs = y.data[:,1:]
-                y = y[:,:-1]
                 og_shape = targs.shape
                 targs = targs.reshape(-1)
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
+                y = y[:,:-1]
                 if hyps['masking_task']:
                     x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
                 preds = model(x.to(DEVICE),y.to(DEVICE))
