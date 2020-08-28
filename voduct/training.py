@@ -61,7 +61,7 @@ def train(hyps, verbose=True):
                                     batch_size=hyps['batch_size'],
                                     shuffle=hyps['shuffle'])
     val_loader = torch.utils.data.DataLoader(val_data,
-                                             batch_size=500)
+                                  batch_size=hyps['batch_size'])
     hyps['n_vocab'] = len(train_data.word2idx.keys())
 
     if verbose:
@@ -74,11 +74,11 @@ def train(hyps, verbose=True):
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5,
                                                     patience=6,
                                                     verbose=True)
-
     if verbose:
         print("Beginning training for {}".format(hyps['save_folder']))
         print("train shape:", train_data.X.shape)
         print("val shape:", val_data.X.shape)
+        print("n_vocab:", hyps['n_vocab'])
 
     record_session(hyps,model)
     if hyps['dataset'] == "WordProblem":
@@ -89,6 +89,8 @@ def train(hyps, verbose=True):
     epoch = -1
     alpha = hyps['loss_alpha']
     print()
+    idx2word = train_data.idx2word
+    mask_idx = train_data.word2idx["<MASK>"]
     while epoch < hyps['n_epochs']:
         epoch += 1
         print("Epoch:{} | Model:{}".format(epoch,hyps['save_folder']))
@@ -96,29 +98,47 @@ def train(hyps, verbose=True):
         avg_loss = 0
         avg_acc = 0
         avg_indy_acc = 0
+        avg_emb_loss = 0
         mask_avg_loss = 0
         mask_avg_acc = 0
         model.train()
         print("Training...")
+        optimizer.zero_grad()
         for b,(x,y) in enumerate(train_loader):
-            optimizer.zero_grad()
+            torch.cuda.empty_cache()
             if model.transformer_type == models.AUTOENCODER:
-                targs = x.data.to(DEVICE)
+                targs = x.data[:,1:]
+                y = x.data
+            elif model.transformer_type == models.DICTIONARY:
+                targs = x.data[:,1:]
+                emb_targs = model.embeddings(y.to(DEVICE))
+                word_to_define = idx2word[y.squeeze()[0].item()]
+                y = x.data
             else:
-                targs = y.data[:,1:].to(DEVICE)
+                targs = y.data[:,1:]
             og_shape = targs.shape
-            idx2word = train_data.idx2word
-            if hyps['init_decs']:
-                y = train_data.inits.clone().repeat(len(x),1)
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
             y = y[:,:-1]
             preds = model(x.to(DEVICE),y.to(DEVICE))
+
+            tot_loss = 0
+            if model.transformer_type == models.DICTIONARY:
+                emb_preds = preds[1]
+                preds = preds[0]
+                emb_loss = F.mse_loss(emb_preds,emb_targs.data)
+                tot_loss += emb_loss
+                avg_emb_loss += emb_loss.item()
+
             if epoch % 3 == 0 and b == 0:
+                if model.transformer_type == models.DICTIONARY:
+                    print("Word:", word_to_define)
+                endx = torch.where(y[0]==mask_idx)[0][0].item()
+                print("y:",[idx2word[a.item()] for a in y[0,:endx]])
+                print("t:", [idx2word[a.item()] for a in targs[0,:endx]])
                 ms = torch.argmax(preds,dim=-1)
-                print("y:",[idx2word[a.item()] for a in y[0]])
-                print("t:", [idx2word[a.item()] for a in targs[0]])
-                print("p:", [idx2word[a.item()] for a in ms[0]])
+                print("p:", [idx2word[a.item()] for a in ms[0,:endx]])
+                del ms
             targs = targs.reshape(-1)
 
             if hyps['masking_task']:
@@ -145,28 +165,46 @@ def train(hyps, verbose=True):
 
             # Tot loss and acc
             preds = preds.reshape(-1,preds.shape[-1])
-            loss = lossfxn(preds,targs)
+            if not hyps['masking_task']:
+                bitmask = (targs==mask_idx)
+                loss = lossfxn(preds[bitmask.to(DEVICE)],
+                               targs[bitmask].to(DEVICE))
+            else:
+                loss = lossfxn(preds,targs.to(DEVICE))
+            if hyps['masking_task']:
+                temp = ((alpha)*loss + (1-alpha)*mask_loss)
+                tot_loss += temp/hyps['n_loss_loops']
+            else:
+                tot_loss += loss/hyps['n_loss_loops']
+            tot_loss.backward()
+
+            if b % hyps['n_loss_loops'] == 0 or b==len(train_loader)-1:
+                optimizer.step()
+                optimizer.zero_grad()
+
             preds = torch.argmax(preds,dim=-1).reshape(og_shape)
             targs = targs.reshape(og_shape)
             sl = og_shape[-1]
-            eq = (preds==targs).float()
+            eq = (preds==targs.to(DEVICE)).float()
             acc = (eq.sum(-1)==sl).float().mean()
+            if not hyps['masking_task']:
+                indy_acc = eq.reshape(-1)[bitmask].mean()
+            else:
+                indy_acc = eq.mean()
             indy_acc = eq.mean()
             avg_acc += acc.item()
             avg_indy_acc += indy_acc.item()
             avg_loss += loss.item()
 
-            if hyps['masking_task']:
-                tot_loss = (alpha)*loss + (1-alpha)*mask_loss
-            else:
-                tot_loss = loss
-            tot_loss.backward()
-            optimizer.step()
 
             if hyps["masking_task"]:
                 s = "Mask Loss:{:.5f} | Acc:{:.5f} | {:.0f}%"
                 s = s.format(mask_loss.item(), mask_acc.item(),
                                                b/len(train_loader)*100)
+            elif model.transformer_type == models.DICTIONARY:
+                s = "Loss:{:.5f} | Acc:{:.5f} | Emb:{:.5f} | {:.0f}%"
+                s = s.format(loss.item(),acc.item(),emb_loss.item(),
+                                          b/len(train_loader)*100)
             else:
                 s = "Loss:{:.5f} | Acc:{:.5f} | {:.0f}%"
                 s = s.format(loss.item(), acc.item(),
@@ -179,6 +217,7 @@ def train(hyps, verbose=True):
         train_avg_loss = avg_loss/len(train_loader)
         train_avg_acc = avg_acc/len(train_loader)
         train_avg_indy = avg_indy_acc/len(train_loader)
+        train_emb_loss = avg_emb_loss/len(train_loader)
 
         stats_string = "Train - Loss:{:.5f} | Acc:{:.5f} | Indy:{:.5f}\n"
         stats_string = stats_string.format(train_avg_loss,
@@ -188,28 +227,46 @@ def train(hyps, verbose=True):
             stats_string+="Tr. Mask Loss:{:.5f} | Tr. Mask Acc:{:.5f}\n"
             stats_string = stats_string.format(mask_train_loss,
                                                mask_train_acc)
+        elif model.transformer_type==models.DICTIONARY:
+            stats_string+="Emb Loss:{:.5f}\n"
+            stats_string = stats_string.format(train_emb_loss)
         model.eval()
         avg_loss = 0
         avg_acc = 0
         avg_indy_acc = 0
+        avg_emb_loss = 0
         mask_avg_loss = 0
         mask_avg_acc = 0
         print("Validating...")
         with torch.no_grad():
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
+                torch.cuda.empty_cache()
                 if model.transformer_type == models.AUTOENCODER:
                     targs = x.data[:,1:]
+                    y = x.data
+                elif model.transformer_type == models.DICTIONARY:
+                    targs = x.data[:,1:]
+                    emb_targs = model.embeddings(y.to(DEVICE))
+                    y = x.data
                 else:
                     targs = y.data[:,1:]
                 og_shape = targs.shape
                 targs = targs.reshape(-1)
+
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
                 if hyps['masking_task']:
                     x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
                 y = y[:,:-1]
                 preds = model(x.to(DEVICE),y.to(DEVICE))
+
+                tot_loss = 0
+                if model.transformer_type == models.DICTIONARY:
+                    emb_preds = preds[1]
+                    preds = preds[0]
+                    emb_loss = F.mse_loss(emb_preds,emb_targs)
+                    avg_emb_loss += emb_loss.item()
 
                 if hyps['masking_task']:
                     # Mask loss and acc
@@ -232,18 +289,32 @@ def train(hyps, verbose=True):
                 # Tot loss and acc
                 preds = preds.reshape(-1,preds.shape[-1])
                 targs = targs.to(DEVICE)
-                loss = lossfxn(preds,targs)
+                if not hyps['masking_task']:
+                    bitmask = (targs==mask_idx)
+                    loss = lossfxn(preds[bitmask.to(DEVICE)],
+                                   targs[bitmask].to(DEVICE))
+                else:
+                    loss = lossfxn(preds,targs.to(DEVICE))
                 preds = torch.argmax(preds,dim=-1).reshape(og_shape)
                 targs = targs.reshape(og_shape)
                 sl = og_shape[-1]
-                eq = (preds==targs).float()
+                eq = (preds==targs.to(DEVICE)).float()
+                preds = preds.cpu()
                 acc = (eq.sum(-1)==sl).float().mean()
-                indy_acc = eq.mean()
+                if not hyps['masking_task']:
+                    indy_acc = eq.reshape(-1)[bitmask].mean()
+                else:
+                    indy_acc = eq.mean()
                 if b == rand_word_batch or hyps['exp_name']=="test":
                     rand = int(np.random.randint(0,len(x)))
                     question = x[rand]
+                    endx = torch.where(question==mask_idx)[0][0].item()
+                    question = question[:endx]
                     pred_samp = preds[rand]
                     targ_samp = targs[rand]
+                    endx = torch.where(targ_samp==mask_idx)[0][0].item()
+                    targ_samp = targ_samp[:endx]
+                    pred_samp = pred_samp[:endx]
                     idx2word = train_data.idx2word
                     question =  [idx2word[p.item()] for p in question]
                     pred_samp = [idx2word[p.item()] for p in pred_samp]
@@ -259,6 +330,10 @@ def train(hyps, verbose=True):
                     s = "Mask Loss:{:.5f} | Acc:{:.5f} | {:.0f}%"
                     s = s.format(mask_loss.item(), mask_acc.item(),
                                                    b/len(val_loader)*100)
+                elif model.transformer_type == models.DICTIONARY:
+                    s = "Loss:{:.5f} | Acc:{:.5f} | Emb:{:.5f} | {:.0f}%"
+                    s = s.format(loss.item(),acc.item(),emb_loss.item(),
+                                              b/len(val_loader)*100)
                 else:
                     s = "Loss:{:.5f} | Acc:{:.5f} | {:.0f}%"
                     s = s.format(loss.item(), acc.item(),
@@ -266,10 +341,18 @@ def train(hyps, verbose=True):
                 print(s, end=len(s)*" " + "\r")
                 if hyps['exp_name']=="test" and b > 5: break
         print()
+        del targs
+        del x
+        del y
+        del eq
+        del bitmask
+        del emb_targs
+        torch.cuda.empty_cache()
         mask_val_loss = mask_avg_loss/len(val_loader)
         mask_val_acc = mask_avg_acc/  len(val_loader)
         val_avg_loss = avg_loss/len(val_loader)
         val_avg_acc = avg_acc/len(val_loader)
+        val_emb_loss = avg_emb_loss/len(val_loader)
         scheduler.step(val_avg_acc)
         val_avg_indy = avg_indy_acc/len(val_loader)
         stats_string += "Val - Loss:{:.5f} | Acc:{:.5f} | Indy:{:.5f}\n"
