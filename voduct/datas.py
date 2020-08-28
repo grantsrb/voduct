@@ -8,6 +8,7 @@ import copy
 import pickle
 import tokenizer as tk
 import voduct.models as vomods
+import voduct.utils as utils
 import random
 
 
@@ -78,7 +79,7 @@ class WordProblems(Dataset):
         self.tokenizer = tk.Tokenizer()
         self.lowercase = lowercase
         if "exp_name" in kwargs and kwargs['exp_name']=="test":
-            n_samples = 100
+            n_samples = kwargs['batch_size']
         self.n_samples = n_samples
         self.max_count = max_count
         self.samp_ps = samp_ps
@@ -1080,6 +1081,98 @@ class Nietzsche(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
 
+class WebstersDictionary(Dataset):
+    """
+    Provides words and their definitions as lists of token indices
+    """
+    def __init__(self, path_to_file, lowercase=True,
+                                     split_digits=True,
+                                     max_count=200,
+                                     **kwargs):
+        """
+        path_to_file: str
+            the path to the webster's dictionary json
+        lowercase: bool
+            if true, all words are lowerased
+        split_digits: bool
+            split digits into individual 0-9 tokens
+        max_count: int
+            the maximum definition length
+        """
+        self.max_count = max_count
+        self.path_to_file = path_to_file
+        self.lowercase = lowercase
+        self.split_digits = split_digits
+        self.webster = utils.load_json(self.path_to_file)
+        self.word_keys,self.defs = zip(*self.webster.items())
+        self.word_keys = list(self.word_keys)
+        self.defs = list(self.defs)
+        if 'exp_name' in kwargs and kwargs['exp_name'] == "test":
+            self.word_keys = self.word_keys[:2*kwargs['batch_size']]
+            self.defs = self.defs[:2*kwargs['batch_size']]
+        self.tokenizer = tk.Tokenizer(X=self.defs, Y=self.word_keys,
+                                   split_digits=self.split_digits,
+                                   index=False,
+                                   prepend=True,
+                                   append=True)
+        if 'exp_name' in kwargs and kwargs['exp_name'] == "test":
+            word2idx = self.tokenizer.word2idx
+            idx2word = self.tokenizer.idx2word
+            startx = len(word2idx)
+            for i in range(startx,startx+200000):
+                self.tokenizer.word2idx[str(i)] = i
+                self.tokenizer.idx2word[i] = str(i)
+        new_X = []
+        new_Y = []
+        for i,tok in enumerate(self.tokenizer.token_X):
+            if len(tok) < self.max_count:
+                new_X.append(self.tokenizer.token_X[i])
+                new_Y.append(self.tokenizer.token_Y[i])
+        self.token_X = new_X
+        self.token_Y = new_Y
+        xlen = self.tokenizer.seq_len_x
+        self.X = self.tokenizer.index_tokens(self.token_X,
+                                             prepend=True,
+                                             append=True,
+                                             seq_len=self.max_count)
+        self.tokenizer.X = self.X
+        self.Y = self.tokenizer.index_tokens(self.token_Y,
+                                             prepend=False,
+                                             append=False,
+                                             seq_len=1)
+        self.tokenizer.Y = self.Y
+
+    @property
+    def inits(self):
+        return self.tokenizer.inits
+    @property
+    def word2idx(self):
+        return self.tokenizer.word2idx
+    @property
+    def idx2word(self):
+        return self.tokenizer.idx2word
+    @property
+    def MASK(self):
+        return self.tokenizer.MASK
+    @property
+    def START(self):
+        return self.tokenizer.START
+    @property
+    def STOP(self):
+        return self.tokenizer.STOP
+    @property
+    def seq_len_x(self):
+        return self.tokenizer.seq_len_x
+    @property
+    def seq_len_y(self):
+        return self.tokenizer.seq_len_y
+    
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self,idx):
+        return self.X[idx], self.Y[idx]
+
 class EmptyDataset(Dataset):
     def __init__(self, X, Y):
         self.X = X
@@ -1092,13 +1185,13 @@ class EmptyDataset(Dataset):
         return self.X[idx], self.Y[idx]
 
 class TextFile(Dataset):
-    def __init__(self, txt_path, seq_len=100, lowercase=False,
+    def __init__(self, path_to_file, seq_len=100, lowercase=False,
                                                   **kwargs):
-        self.txt_path = txt_path
+        self.path_to_file = path_to_file
         self.lowercase = lowercase
         self.seq_len = seq_len
 
-        tok_X,tok_Y,words = self.get_data(txt_path,seq_len,lowercase,
+        tok_X,tok_Y,words = self.get_data(path_to_file,seq_len,lowercase,
                                                            **kwargs)
         self.tok_X = tok_X # (N, SeqLen)
         self.tok_Y = tok_Y # (N, SeqLen)
@@ -1144,9 +1237,9 @@ class TextFile(Dataset):
     def seq_len_y(self):
         return self.tokenizer.seq_len_y
 
-    def get_data(self, txt_path, seq_len, lowercase, **kwargs):
+    def get_data(self, path_to_file, seq_len, lowercase, **kwargs):
         """
-        txt_path: str
+        path_to_file: str
             path to .txt file
         seq_len: int
             length of sequences
@@ -1154,7 +1247,7 @@ class TextFile(Dataset):
             if true, all characters are made lowercase
         """
         # Get and prepare data
-        data_path = os.path.expanduser(txt_path)
+        data_path = os.path.expanduser(path_to_file)
         data = open(data_path, 'r')
     
         text = data.read()
@@ -1202,7 +1295,6 @@ class EmptyDataset(Dataset):
 def get_data(seq_len=10, shuffle_split=False,
                          train_p=0.8,
                          dataset="Journal",
-                         model_type=vomods.SEQ2SEQ,
                          n_samples=50000,
                          difficulty="medium",
                          split_digits=False,
@@ -1219,8 +1311,6 @@ def get_data(seq_len=10, shuffle_split=False,
         if true, shuffles before the split
     train_p: float (0,1)
         the portion of data reserved for training
-    model_type: str
-        the type of model (autoencoder or seq2seq)
     n_samples: int
         some datasets allow a specifications of the quantity of data
         points
