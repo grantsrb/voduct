@@ -106,13 +106,13 @@ def train(hyps, verbose=True):
                 targs = x.data.to(DEVICE)
             else:
                 targs = y.data[:,1:].to(DEVICE)
-            y = y[:,:-1]
             og_shape = targs.shape
             idx2word = train_data.idx2word
             if hyps['init_decs']:
                 y = train_data.inits.clone().repeat(len(x),1)
             if hyps['masking_task']:
                 x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
+            y = y[:,:-1]
             preds = model(x.to(DEVICE),y.to(DEVICE))
             if epoch % 3 == 0 and b == 0:
                 ms = torch.argmax(preds,dim=-1)
@@ -206,9 +206,9 @@ def train(hyps, verbose=True):
                 targs = targs.reshape(-1)
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
-                y = y[:,:-1]
                 if hyps['masking_task']:
                     x,y,mask = mask_words(x, y, mask_p=hyps['mask_p'])
+                y = y[:,:-1]
                 preds = model(x.to(DEVICE),y.to(DEVICE))
 
                 if hyps['masking_task']:
