@@ -13,9 +13,11 @@ DEVICE_DICT = {-1:"cpu", 0:"cuda:0"}
 
 SEQ2SEQ = "seq2seq"
 AUTOENCODER = "autoencoder"
+DICTIONARY = "dictionary"
 TRANSFORMER_TYPE = {"Transformer":SEQ2SEQ,
                     "TransAutoencoder":AUTOENCODER,
-                    "Codt":AUTOENCODER}
+                    "Codt":AUTOENCODER,
+                    "LSTMBaseline":AUTOENCODER}
 CONV = "convolution"
 TRANS = "transformer"
 RSSM = "rssm"
@@ -55,6 +57,7 @@ class TransformerBase(nn.Module):
                                          n_filts=10,
                                          ordered_preds=False,
                                          gen_decs=False,
+                                         init_decs=False,
                                          **kwargs):
         """
         seq_len: int or None
@@ -111,6 +114,9 @@ class TransformerBase(nn.Module):
             as the inputs for later decodings. (stands for generate
             decodings). This ensures earlier attention values are
             completely unaffected by later inputs.
+        init_decs: bool
+            if true, an initialization decoding vector is learned as
+            the initial input to the decoder.
         """
         super().__init__()
 
@@ -137,6 +143,7 @@ class TransformerBase(nn.Module):
         self.n_filts = n_filts
         self.ordered_preds = ordered_preds
         self.gen_decs = gen_decs
+        self.init_decs = init_decs
 
 class Transformer(TransformerBase):
     def __init__(self, *args, **kwargs):
@@ -155,13 +162,16 @@ class Transformer(TransformerBase):
                                             n_heads=self.n_heads,
                                             use_mask=self.enc_mask,
                                             act_fxn=self.act_fxn)
+
+        use_mask = not self.init_decs and self.ordered_preds
         self.decoder = crabmods.Decoder(self.dec_slen,self.emb_size,
                                             self.attn_size,
                                             self.dec_layers,
                                             n_heads=self.n_heads,
                                             act_fxn=self.act_fxn,
-                                            use_mask=self.ordered_preds,
-                                            gen_decs=self.gen_decs)
+                                            use_mask=use_mask,
+                                            gen_decs=self.gen_decs,
+                                            init_decs=self.init_decs)
 
         self.classifier = Classifier(self.emb_size,
                                      self.n_vocab,
@@ -177,12 +187,15 @@ class Transformer(TransformerBase):
         x: float tensor (B,S)
         y: float tensor (B,S)
         """
+        x_mask = (x==0).masked_fill(x==0,1e-10)
+        y_mask = (y==0).masked_fill(y==0,1e-10)
         self.embeddings.weight.data[0,:] = 0 # Mask index
         embs = self.embeddings(x)
-        encs = self.encoder(embs)
+        encs = self.encoder(embs, x_mask=x_mask)
         encs = self.enc_dropout(encs)
         dembs = self.embeddings(y)
-        decs = self.decoder(dembs, encs)
+        decs = self.decoder(dembs, encs, x_mask=y_mask,
+                                         enc_mask=x_mask)
         decs = self.dec_dropout(decs)
         decs = decs.reshape(-1,decs.shape[-1])
         preds = self.classifier(decs)
@@ -534,6 +547,7 @@ class TransAutoencoder(TransformerBase):
                                              self.attn_size,
                                              self.dec_layers,
                                              n_heads=self.n_heads,
+                                             use_mask=False,
                                              act_fxn=self.act_fxn)
 
         self.classifier = Classifier(self.emb_size,
@@ -579,7 +593,10 @@ class Codt(TransformerBase):
             the number of layers used to collapse the encoded sequence
         """
         super().__init__(*args, **kwargs)
-        self.transformer_type = AUTOENCODER
+        if kwargs['dataset'] == "WebstersDictionary":
+            self.transformer_type = DICTIONARY
+        else:
+            self.transformer_type = AUTOENCODER
         self.collapse_size = collapse_size
         self.collapse_layers = collapse_layers
         self.dec_slen = self.enc_slen
@@ -603,13 +620,14 @@ class Codt(TransformerBase):
                                  use_mask=False,
                                  act_fxn=self.act_fxn)
 
+        use_mask = not self.init_decs and self.ordered_preds
         self.decoder = crabmods.Decoder(self.dec_slen,self.emb_size,
                                              self.attn_size,
                                              self.dec_layers,
                                              n_heads=self.n_heads,
+                                             use_mask=use_mask,
+                                             init_decs=self.init_decs,
                                              act_fxn=self.act_fxn)
-        self.decode_init = torch.randn(1,1,self.emb_size)
-        self.decode_init = nn.Parameter(self.decode_init)
 
         self.classifier = Classifier(self.emb_size,
                                      self.n_vocab,
@@ -622,19 +640,80 @@ class Codt(TransformerBase):
         self.collapse_dropout = nn.Dropout(self.collapse_drop_p)
         self.dec_dropout = nn.Dropout(self.dec_drop_p)
 
-    def forward(self, x, y):
+    def forward(self, x, y, **kwargs):
         self.embeddings.weight.data[0,:] = 0 # Mask index
+        x_mask = (x==0).masked_fill(x==0,1e-10)
         embs = self.embeddings(x)
-        encs = self.encoder(embs)
+        encs = self.encoder(embs,x_mask=x_mask)
         encs = self.enc_dropout(encs)
         init = self.collapse_init.repeat((len(x),self.collapse_size,1))
         encs = self.collapser(init, encs)
         encs = self.collapse_dropout(encs)
-        init = self.decode_init.repeat((len(x),self.dec_slen,1))
-        decs = self.decoder(init, encs)
+        y_mask = (y==0).float().masked_fill(y==0,1e-10)
+        embs = self.embeddings(y)
+        decs = self.decoder(embs, encs, x_mask=y_mask)
         decs = self.dec_dropout(decs)
         shape = decs.shape
         decs = decs.reshape(-1,decs.shape[-1])
         preds = self.classifier(decs)
+        if self.transformer_type == DICTIONARY:
+            return preds.reshape(shape[0],shape[1],-1),encs
         return preds.reshape(shape[0],shape[1],-1)
+
+class LSTMBaseline(TransformerBase):
+    """
+    this is a simple lstm autoencoder
+    """
+    def __init__(self, *args, **kwargs):
+        """
+        collapse_size: int
+            the number of elements in the collapsed vector sequence
+        collapse_layers: int
+            the number of layers used to collapse the encoded sequence
+        """
+        super().__init__(*args, **kwargs)
+        self.transformer_type = AUTOENCODER
+        self.dec_slen = self.enc_slen
+
+        self.embeddings = nn.Embedding(self.n_vocab, self.emb_size)
+
+        self.encoder = nn.LSTMCell(input_size=self.emb_size,
+                                   hidden_size=self.emb_size)
+        self.decoder = nn.LSTMCell(input_size=self.emb_size,
+                                   hidden_size=self.emb_size)
+
+        self.classifier = Classifier(self.emb_size,
+                                     self.n_vocab,
+                                     h_size=self.class_h_size,
+                                     bnorm=self.class_bnorm,
+                                     drop_p=self.class_drop_p,
+                                     act_fxn=self.act_fxn)
+
+        self.enc_dropout = nn.Dropout(self.enc_drop_p)
+        self.collapse_dropout = nn.Dropout(self.collapse_drop_p)
+        self.dec_dropout = nn.Dropout(self.dec_drop_p)
+
+    def get_blank_h(self,bsize):
+        """
+        bsize: int
+        """
+        h = torch.zeros(bsize, self.emb_size)
+        if next(self.parameters).is_cuda:
+            h = h.cuda()
+        c = torch.zeros_like(h)
+        return (h,c)
+
+    def forward(self, x, **kwargs):
+        self.embeddings.weight.data[0,:] = 0 # Mask index
+        embs = self.embeddings(x)
+        h = self.get_blank_h(len(x))
+        for i in range(x.shape[1]):
+            h = self.encoder(embs[:,i],h)
+        preds = []
+        for i in range(x.shape[1]):
+            pred = self.classifier(h[0])
+            preds.append(pred[:,None])
+            emb = self.embeddings(torch.argmax(preds,dim=-1))
+            h = self.decoder(emb,h)
+        return torch.cat(preds,dim=1)
 
