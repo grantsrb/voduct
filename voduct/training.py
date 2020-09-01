@@ -74,6 +74,8 @@ def train(hyps, verbose=True):
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5,
                                                     patience=6,
                                                     verbose=True)
+    if model.transformer_type != models.DICTIONARY:
+        hyps['emb_alpha'] = 0
     if verbose:
         print("Beginning training for {}".format(hyps['save_folder']))
         print("train shape:", train_data.X.shape)
@@ -88,6 +90,7 @@ def train(hyps, verbose=True):
         hyps['n_epochs'] = 2
     epoch = -1
     alpha = hyps['loss_alpha']
+    emb_alpha = hyps['emb_alpha']
     print()
     idx2word = train_data.idx2word
     mask_idx = train_data.word2idx["<MASK>"]
@@ -127,7 +130,7 @@ def train(hyps, verbose=True):
                 emb_preds = preds[1]
                 preds = preds[0]
                 emb_loss = F.mse_loss(emb_preds,emb_targs.data)
-                tot_loss += emb_loss
+                tot_loss += (emb_alpha)*emb_loss
                 avg_emb_loss += emb_loss.item()
 
             if epoch % 3 == 0 and b == 0:
@@ -167,7 +170,7 @@ def train(hyps, verbose=True):
             preds = preds.reshape(-1,preds.shape[-1])
             if not hyps['masking_task']:
                 bitmask = (targs==mask_idx)
-                loss = lossfxn(preds[bitmask.to(DEVICE)],
+                loss = (1-emb_alpha)*lossfxn(preds[bitmask.to(DEVICE)],
                                targs[bitmask].to(DEVICE))
             else:
                 loss = lossfxn(preds,targs.to(DEVICE))
@@ -248,6 +251,9 @@ def train(hyps, verbose=True):
                 elif model.transformer_type == models.DICTIONARY:
                     targs = x.data[:,1:]
                     emb_targs = model.embeddings(y.to(DEVICE))
+                    if b == rand_word_batch or hyps['exp_name']=="test":
+                        words = [idx2word[y.squeeze()[i].item()] for\
+                                         i in range(len(y.squeeze()))]
                     y = x.data
                 else:
                     targs = y.data[:,1:]
@@ -322,6 +328,8 @@ def train(hyps, verbose=True):
                     question = " ".join(question)
                     pred_samp = " ".join(pred_samp)
                     targ_samp = " ".join(targ_samp)
+                    words is not None:
+                        word_samp = str(words[rand])
 
                 avg_acc += acc.item()
                 avg_indy_acc += indy_acc.item()
@@ -361,6 +369,8 @@ def train(hyps, verbose=True):
         if hyps['masking_task']:
             stats_string+="Val Mask Loss:{:.5f} | Val Mask Acc:{:.5f}\n"
             stats_string=stats_string.format(mask_avg_loss,mask_avg_acc)
+        if words is not None:
+            stats_string += "Word: " + word_samp + "\n"
         stats_string += "Quest: " + question + "\n"
         stats_string += "Targ: " + targ_samp + "\n"
         stats_string += "Pred: " + pred_samp + "\n"
