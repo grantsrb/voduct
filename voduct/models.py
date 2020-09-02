@@ -35,33 +35,11 @@ EXPAND_TYPES = {"convolution":CONV,
                 "rssm":RSSM,
                 "rnn":RSSM}
 
-class TransformerBase(nn.Module):
-    def __init__(self, seq_len=None, n_vocab=None, emb_size=512,
-                                         enc_slen=None,
-                                         dec_slen=None,
-                                         attn_size=64,
-                                         n_heads=8,
-                                         enc_layers=6,
-                                         dec_layers=6,
-                                         enc_mask=False,
-                                         class_h_size=4000,
-                                         class_bnorm=True,
-                                         class_drop_p=0,
-                                         act_fxn="ReLU",
-                                         collapse_type=CONV,
-                                         expand_type=TRANS,
-                                         enc_drop_p=0,
-                                         dec_drop_p=0,
-                                         collapse_drop_p=0,
-                                         expand_drop_p=0,
-                                         n_filts=10,
-                                         ordered_preds=False,
-                                         gen_decs=False,
-                                         init_decs=False,
-                                         **kwargs):
+class CustomBase(crabmods.TransformerBase):
+    def __init__(self, **kwargs):
         """
         seq_len: int or None
-            the length of the sequences to be analyzed. If None,
+            the maximum length of the sequences to be analyzed. If None,
             dec_slen and enc_slen must not be None
         enc_slen: int or None
             the length of the sequences to be encoded
@@ -117,89 +95,12 @@ class TransformerBase(nn.Module):
         init_decs: bool
             if true, an initialization decoding vector is learned as
             the initial input to the decoder.
+        idx_inputs: bool
+            if true, the inputs are integer (long) indexes that require
+            an embedding layer. Otherwise it is assumed that the inputs
+            are feature vectors that do not require an embedding layer
         """
-        super().__init__()
-
-        self.seq_len = seq_len
-        self.enc_slen = enc_slen if enc_slen is not None else seq_len
-        self.dec_slen = dec_slen if dec_slen is not None else seq_len
-        self.n_vocab = n_vocab
-        self.emb_size = emb_size
-        self.attn_size = attn_size
-        self.n_heads = n_heads
-        self.enc_layers = enc_layers
-        self.dec_layers = dec_layers
-        self.enc_mask = enc_mask
-        self.class_bnorm = class_bnorm
-        self.class_drop_p = class_drop_p
-        self.class_h_size = class_h_size
-        self.act_fxn = act_fxn
-        self.collapse_type = collapse_type
-        self.expand_type = expand_type
-        self.enc_drop_p = enc_drop_p
-        self.collapse_drop_p = collapse_drop_p
-        self.expand_drop_p = expand_drop_p
-        self.dec_drop_p = dec_drop_p
-        self.n_filts = n_filts
-        self.ordered_preds = ordered_preds
-        self.gen_decs = gen_decs
-        self.init_decs = init_decs
-
-class Transformer(TransformerBase):
-    def __init__(self, *args, **kwargs):
-        """
-        See TransformerBase for arguments
-        """
-        super().__init__(*args, **kwargs)
-        self.transformer_type = SEQ2SEQ
-
-        self.embeddings = nn.Embedding(self.n_vocab, self.emb_size)
-
-        self.encoder = crabmods.Encoder(self.enc_slen,
-                                            emb_size=self.emb_size,
-                                            attn_size=self.attn_size,
-                                            n_layers=self.enc_layers,
-                                            n_heads=self.n_heads,
-                                            use_mask=self.enc_mask,
-                                            act_fxn=self.act_fxn)
-
-        use_mask = not self.init_decs and self.ordered_preds
-        self.decoder = crabmods.Decoder(self.dec_slen,self.emb_size,
-                                            self.attn_size,
-                                            self.dec_layers,
-                                            n_heads=self.n_heads,
-                                            act_fxn=self.act_fxn,
-                                            use_mask=use_mask,
-                                            gen_decs=self.gen_decs,
-                                            init_decs=self.init_decs)
-
-        self.classifier = Classifier(self.emb_size,
-                                     self.n_vocab,
-                                     h_size=self.class_h_size,
-                                     bnorm=self.class_bnorm,
-                                     drop_p=self.class_drop_p,
-                                     act_fxn=self.act_fxn)
-        self.enc_dropout = nn.Dropout(self.enc_drop_p)
-        self.dec_dropout = nn.Dropout(self.dec_drop_p)
-
-    def forward(self, x, y):
-        """
-        x: float tensor (B,S)
-        y: float tensor (B,S)
-        """
-        x_mask = (x==0).masked_fill(x==0,1e-10)
-        y_mask = (y==0).masked_fill(y==0,1e-10)
-        self.embeddings.weight.data[0,:] = 0 # Mask index
-        embs = self.embeddings(x)
-        encs = self.encoder(embs, x_mask=x_mask)
-        encs = self.enc_dropout(encs)
-        dembs = self.embeddings(y)
-        decs = self.decoder(dembs, encs, x_mask=y_mask,
-                                         enc_mask=x_mask)
-        decs = self.dec_dropout(decs)
-        decs = decs.reshape(-1,decs.shape[-1])
-        preds = self.classifier(decs)
-        return preds.reshape(len(y),y.shape[1],preds.shape[-1])
+        super().__init__(**kwargs)
 
 class Classifier(nn.Module):
     def __init__(self, emb_size, n_vocab, h_size, bnorm=True,
@@ -501,10 +402,10 @@ class CollapsingAttention(nn.Module):
         embs = self.enc_net(fv)
         return embs
 
-class TransAutoencoder(TransformerBase):
+class TransAutoencoder(CustomBase):
     def __init__(self, *args, **kwargs):
         """
-        See TransformerBase for arguments
+        See CustomBase for arguments
         """
         super().__init__(*args, **kwargs)
         self.transformer_type = AUTOENCODER
@@ -577,7 +478,7 @@ class TransAutoencoder(TransformerBase):
         decs = decs.reshape(-1,decs.shape[-1])
         return self.classifier(decs)
 
-class Codt(TransformerBase):
+class Codt(CustomBase):
     """
     this is an experimental model to prove that the basic idea of
     minimal supervision transformers can learn compression. Collapsing
@@ -660,7 +561,7 @@ class Codt(TransformerBase):
             return preds.reshape(shape[0],shape[1],-1),encs
         return preds.reshape(shape[0],shape[1],-1)
 
-class LSTMBaseline(TransformerBase):
+class LSTMBaseline(CustomBase):
     """
     this is a simple lstm autoencoder
     """
