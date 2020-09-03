@@ -7,6 +7,7 @@ import os
 import torch.nn.functional as F
 import sencoder as sen
 import matplotlib.pyplot as plt
+from crab.custom_modules import Sin, Transformer, TransformerBase
 import crab.custom_modules as crabmods
 
 DEVICE_DICT = {-1:"cpu", 0:"cuda:0"}
@@ -35,7 +36,7 @@ EXPAND_TYPES = {"convolution":CONV,
                 "rssm":RSSM,
                 "rnn":RSSM}
 
-class CustomBase(crabmods.TransformerBase):
+class CustomBase(TransformerBase):
     def __init__(self, **kwargs):
         """
         seq_len: int or None
@@ -101,66 +102,6 @@ class CustomBase(crabmods.TransformerBase):
             are feature vectors that do not require an embedding layer
         """
         super().__init__(**kwargs)
-
-class Classifier(nn.Module):
-    def __init__(self, emb_size, n_vocab, h_size, bnorm=True,
-                                                  drop_p=0,
-                                                  act_fxn="ReLU"):
-        """
-        emb_size: int
-            the size of the embedding layer
-        n_vocab: int
-            the number of words in the vocabulary
-        h_size: int
-            the size of the hidden layer
-        bnorm: bool
-            if true, the hidden layers use a batchnorm layer
-        drop_p: float
-            the dropout probability of the dropout modules
-        act_fxn: str
-            the name of the activation function to be used with the
-            MLP
-        """
-
-        super().__init__()
-        self.emb_size = emb_size
-        self.n_vocab = n_vocab
-        self.h_size = h_size
-        self.bnorm = bnorm
-        self.drop_p = drop_p
-        self.act_fxn = act_fxn
-
-        modules = []
-        modules.append(nn.Linear(emb_size,h_size))
-        if bnorm:
-            modules.append(nn.BatchNorm1d(h_size))
-        modules.append(nn.Dropout(drop_p))
-        modules.append(globals()[act_fxn]())
-
-        modules.append(nn.Linear(h_size,h_size))
-        if bnorm:
-            modules.append(nn.BatchNorm1d(h_size))
-        modules.append(nn.Dropout(drop_p))
-        modules.append(globals()[act_fxn]())
-
-        modules.append(nn.Linear(h_size,n_vocab))
-        self.classifier = nn.Sequential(*modules)
-
-    def forward(self, x):
-        return self.classifier(x)
-
-class Sin(nn.Module):
-    def __init__(self):
-        """
-        A sinusoidal activation function.
-        """
-        super().__init__()
-
-    def forward(self, x):
-        return torch.sin(x)
-
-
-
 
 ######### EXPANSION AND REDUCTION MODULES
 
@@ -451,7 +392,7 @@ class TransAutoencoder(CustomBase):
                                              use_mask=False,
                                              act_fxn=self.act_fxn)
 
-        self.classifier = Classifier(self.emb_size,
+        self.classifier = crabmods.Classifier(self.emb_size,
                                      self.n_vocab,
                                      h_size=self.class_h_size,
                                      bnorm=self.class_bnorm,
@@ -530,7 +471,7 @@ class Codt(CustomBase):
                                              init_decs=self.init_decs,
                                              act_fxn=self.act_fxn)
 
-        self.classifier = Classifier(self.emb_size,
+        self.classifier = crabmods.Classifier(self.emb_size,
                                      self.n_vocab,
                                      h_size=self.class_h_size,
                                      bnorm=self.class_bnorm,
@@ -583,7 +524,7 @@ class LSTMBaseline(CustomBase):
         self.decoder = nn.LSTMCell(input_size=self.emb_size,
                                    hidden_size=self.emb_size)
 
-        self.classifier = Classifier(self.emb_size,
+        self.classifier = crabmods.Classifier(self.emb_size,
                                      self.n_vocab,
                                      h_size=self.class_h_size,
                                      bnorm=self.class_bnorm,

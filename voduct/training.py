@@ -136,7 +136,8 @@ def train(hyps, verbose=True):
             if epoch % 3 == 0 and b == 0:
                 if model.transformer_type == models.DICTIONARY:
                     print("Word:", word_to_define)
-                endx = torch.where(y[0]==mask_idx)[0][0].item()
+                whr = torch.where(y[0]==mask_idx)[0]
+                endx = y.shape[-1] if len(whr) == 0 else whr[0].item()
                 print("y:",[idx2word[a.item()] for a in y[0,:endx]])
                 print("t:", [idx2word[a.item()] for a in targs[0,:endx]])
                 ms = torch.argmax(preds,dim=-1)
@@ -168,12 +169,14 @@ def train(hyps, verbose=True):
 
             # Tot loss and acc
             preds = preds.reshape(-1,preds.shape[-1])
+            targs = targs.reshape(-1).to(DEVICE)
             if not hyps['masking_task']:
-                bitmask = (targs==mask_idx)
-                loss = (1-emb_alpha)*lossfxn(preds[bitmask.to(DEVICE)],
-                               targs[bitmask].to(DEVICE))
+                bitmask = (targs!=mask_idx)
+                loss = (1-emb_alpha)*lossfxn(preds[bitmask],
+                                             targs[bitmask])
             else:
-                loss = lossfxn(preds,targs.to(DEVICE))
+                loss = lossfxn(preds,targs)
+
             if hyps['masking_task']:
                 temp = ((alpha)*loss + (1-alpha)*mask_loss)
                 tot_loss += temp/hyps['n_loss_loops']
@@ -185,16 +188,21 @@ def train(hyps, verbose=True):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            preds = torch.argmax(preds,dim=-1).reshape(og_shape)
-            targs = targs.reshape(og_shape)
-            sl = og_shape[-1]
-            eq = (preds==targs.to(DEVICE)).float()
-            acc = (eq.sum(-1)==sl).float().mean()
-            if not hyps['masking_task']:
-                indy_acc = eq.reshape(-1)[bitmask].mean()
-            else:
-                indy_acc = eq.mean()
-            indy_acc = eq.mean()
+            with torch.no_grad():
+                preds = torch.argmax(preds,dim=-1).reshape(og_shape)
+                targs = targs.reshape(og_shape)
+                sl = og_shape[-1]
+                if not hyps['masking_task']:
+                    preds[~bitmask.reshape(og_shape)] = mask_idx
+                    eq = (preds==targs).float()
+                    acc = (eq.sum(-1)==sl).float().mean()
+                    indy_acc = eq.reshape(-1)[bitmask.reshape(-1)].mean()
+                else:
+                    eq = (preds==targs).float()
+                    acc = (eq.sum(-1)==sl).float().mean()
+                    indy_acc = eq.mean()
+                preds = preds.cpu()
+
             avg_acc += acc.item()
             avg_indy_acc += indy_acc.item()
             avg_loss += loss.item()
@@ -241,6 +249,7 @@ def train(hyps, verbose=True):
         mask_avg_loss = 0
         mask_avg_acc = 0
         print("Validating...")
+        words = None
         with torch.no_grad():
             rand_word_batch = int(np.random.randint(0,len(val_loader)))
             for b,(x,y) in enumerate(val_loader):
@@ -258,7 +267,6 @@ def train(hyps, verbose=True):
                 else:
                     targs = y.data[:,1:]
                 og_shape = targs.shape
-                targs = targs.reshape(-1)
 
                 if hyps['init_decs']:
                     y = train_data.inits.clone().repeat(len(x),1)
@@ -294,31 +302,36 @@ def train(hyps, verbose=True):
 
                 # Tot loss and acc
                 preds = preds.reshape(-1,preds.shape[-1])
-                targs = targs.to(DEVICE)
+                targs = targs.reshape(-1).to(DEVICE)
                 if not hyps['masking_task']:
-                    bitmask = (targs==mask_idx)
-                    loss = lossfxn(preds[bitmask.to(DEVICE)],
-                                   targs[bitmask].to(DEVICE))
+                    bitmask = (targs!=mask_idx)
+                    loss = lossfxn(preds[bitmask], targs[bitmask])
                 else:
-                    loss = lossfxn(preds,targs.to(DEVICE))
+                    loss = lossfxn(preds,targs)
                 preds = torch.argmax(preds,dim=-1).reshape(og_shape)
                 targs = targs.reshape(og_shape)
                 sl = og_shape[-1]
-                eq = (preds==targs.to(DEVICE)).float()
-                preds = preds.cpu()
-                acc = (eq.sum(-1)==sl).float().mean()
                 if not hyps['masking_task']:
-                    indy_acc = eq.reshape(-1)[bitmask].mean()
+                    preds[~bitmask.reshape(og_shape)] = mask_idx
+                    eq = (preds==targs).float()
+                    acc = (eq.sum(-1)==sl).float().mean()
+                    indy_acc = eq.reshape(-1)[bitmask.reshape(-1)].mean()
                 else:
+                    eq = (preds==targs).float()
+                    acc = (eq.sum(-1)==sl).float().mean()
                     indy_acc = eq.mean()
+                preds = preds.cpu()
+
                 if b == rand_word_batch or hyps['exp_name']=="test":
                     rand = int(np.random.randint(0,len(x)))
                     question = x[rand]
-                    endx = torch.where(question==mask_idx)[0][0].item()
+                    whr = torch.where(question==mask_idx)[0]
+                    endx=len(question) if len(whr)==0 else whr[0].item()
                     question = question[:endx]
                     pred_samp = preds[rand]
                     targ_samp = targs[rand]
-                    endx = torch.where(targ_samp==mask_idx)[0][0].item()
+                    whr = torch.where(targ_samp==mask_idx)[0]
+                    endx=len(targ_samp) if len(whr)==0 else whr[0].item()
                     targ_samp = targ_samp[:endx]
                     pred_samp = pred_samp[:endx]
                     idx2word = train_data.idx2word
@@ -328,7 +341,7 @@ def train(hyps, verbose=True):
                     question = " ".join(question)
                     pred_samp = " ".join(pred_samp)
                     targ_samp = " ".join(targ_samp)
-                    words is not None:
+                    if words is not None:
                         word_samp = str(words[rand])
 
                 avg_acc += acc.item()
@@ -353,8 +366,8 @@ def train(hyps, verbose=True):
         del x
         del y
         del eq
-        del bitmask
-        del emb_targs
+        if model.transformer_type == models.DICTIONARY:
+            del emb_targs
         torch.cuda.empty_cache()
         mask_val_loss = mask_avg_loss/len(val_loader)
         mask_val_acc = mask_avg_acc/  len(val_loader)

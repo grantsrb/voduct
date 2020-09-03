@@ -35,7 +35,7 @@ class WordProblems(Dataset):
                                           split_digits=False,
                                           verbose=True,
                                           index=True,
-                                          use_structs=True,
+                                          use_structs=False,
                                           samp_ps={"start":.15,
                                                    "end":.7,
                                                    "move":.15},
@@ -79,7 +79,7 @@ class WordProblems(Dataset):
         self.tokenizer = tk.Tokenizer()
         self.lowercase = lowercase
         if "exp_name" in kwargs and kwargs['exp_name']=="test":
-            n_samples = kwargs['batch_size']
+            n_samples = 2*kwargs['batch_size']
         self.n_samples = n_samples
         self.max_count = max_count
         self.samp_ps = samp_ps
@@ -133,7 +133,7 @@ class WordProblems(Dataset):
                                      difficulty=difficulty,
                                      max_count=max_count,
                                      samp_ps=self.samp_ps,
-                                     use_structs=self.use_structs,
+                                     use_structs=True,
                                      verbose=verbose)
         self.samp_structs = samples[-1]
         self.sampled_types = self.count_obj_types(self.samp_structs)
@@ -388,7 +388,8 @@ class WordProblems(Dataset):
                 try:
                     obj_type = rand_sample(list(obj_types))
                 except:
-                    print("Duplicating obj types due to insufficient types")
+                    s="Duplicating objtypes due to insufficient types"
+                    print(s)
                     obj_type = rand_sample(self.obj_types)
 
             color,shape = [o.strip() for o in obj_type.split(" ")]
@@ -1085,12 +1086,12 @@ class WebstersDictionary(Dataset):
     """
     Provides words and their definitions as lists of token indices
     """
-    def __init__(self, path_to_file, lowercase=True,
+    def __init__(self, data_path, lowercase=True,
                                      split_digits=True,
                                      max_count=200,
                                      **kwargs):
         """
-        path_to_file: str
+        data_path: str
             the path to the webster's dictionary json
         lowercase: bool
             if true, all words are lowerased
@@ -1100,21 +1101,23 @@ class WebstersDictionary(Dataset):
             the maximum definition length
         """
         self.max_count = max_count
-        self.path_to_file = path_to_file
+        self.data_path = data_path
         self.lowercase = lowercase
         self.split_digits = split_digits
-        self.webster = utils.load_json(self.path_to_file)
+        self.webster = utils.load_json(self.data_path)
         self.word_keys,self.defs = zip(*self.webster.items())
         self.word_keys = list(self.word_keys)
         self.defs = list(self.defs)
         if 'exp_name' in kwargs and kwargs['exp_name'] == "test":
             self.word_keys = self.word_keys[:2*kwargs['batch_size']]
             self.defs = self.defs[:2*kwargs['batch_size']]
+        words = set(self.word_keys)
         self.tokenizer = tk.Tokenizer(X=self.defs, Y=self.word_keys,
                                    split_digits=self.split_digits,
                                    index=False,
                                    prepend=True,
-                                   append=True)
+                                   append=True,
+                                   words=words)
         if 'exp_name' in kwargs and kwargs['exp_name'] == "test":
             word2idx = self.tokenizer.word2idx
             idx2word = self.tokenizer.idx2word
@@ -1127,16 +1130,15 @@ class WebstersDictionary(Dataset):
         for i,tok in enumerate(self.tokenizer.token_X):
             if len(tok) < self.max_count:
                 new_X.append(self.tokenizer.token_X[i])
-                new_Y.append(self.tokenizer.token_Y[i])
+                new_Y.append([self.tokenizer.string_Y[i]])
         self.token_X = new_X
         self.token_Y = new_Y
-        xlen = self.tokenizer.seq_len_x
         self.X = self.tokenizer.index_tokens(self.token_X,
                                              prepend=True,
                                              append=True,
                                              seq_len=self.max_count)
         self.tokenizer.X = self.X
-        self.Y = self.tokenizer.index_tokens(self.token_Y,
+        self.Y = self.tokenizer.index_tokens(toks=self.token_Y,
                                              prepend=False,
                                              append=False,
                                              seq_len=1)
@@ -1185,13 +1187,13 @@ class EmptyDataset(Dataset):
         return self.X[idx], self.Y[idx]
 
 class TextFile(Dataset):
-    def __init__(self, path_to_file, seq_len=100, lowercase=False,
+    def __init__(self, data_path, seq_len=100, lowercase=False,
                                                   **kwargs):
-        self.path_to_file = path_to_file
+        self.data_path = data_path
         self.lowercase = lowercase
         self.seq_len = seq_len
 
-        tok_X,tok_Y,words = self.get_data(path_to_file,seq_len,lowercase,
+        tok_X,tok_Y,words = self.get_data(data_path,seq_len,lowercase,
                                                            **kwargs)
         self.tok_X = tok_X # (N, SeqLen)
         self.tok_Y = tok_Y # (N, SeqLen)
@@ -1237,9 +1239,9 @@ class TextFile(Dataset):
     def seq_len_y(self):
         return self.tokenizer.seq_len_y
 
-    def get_data(self, path_to_file, seq_len, lowercase, **kwargs):
+    def get_data(self, data_path, seq_len, lowercase, **kwargs):
         """
-        path_to_file: str
+        data_path: str
             path to .txt file
         seq_len: int
             length of sequences
@@ -1247,7 +1249,7 @@ class TextFile(Dataset):
             if true, all characters are made lowercase
         """
         # Get and prepare data
-        data_path = os.path.expanduser(path_to_file)
+        data_path = os.path.expanduser(data_path)
         data = open(data_path, 'r')
     
         text = data.read()
@@ -1335,10 +1337,15 @@ def get_data(seq_len=10, shuffle_split=False,
         if dataset=="WordProblems":
             print("WARNING!!!! shuffle_split is off but is highly recommended for WordProblems datasets.\nPLEASE STOP THIS TRAINING SESSION AND TURN SHUFFLE SPLIT ON")
         perm = torch.arange(len(dataset)).long()
+    print("perm:", perm.shape)
     split_idx = int(len(perm)*train_p)
     if len(perm)-split_idx > 30000: split_idx = len(perm)-30000
     train_idxs = perm[:split_idx]
     val_idxs = perm[split_idx:]
+    print("trainidxs:", train_idxs.shape)
+    print("validxs:", val_idxs.shape)
+    print("train x:", dataset.X.shape)
+    print("train y:", dataset.Y.shape)
 
     word2idx,idx2word = dataset.word2idx, dataset.idx2word
     val_dataset = EmptyDataset(X=dataset.X[val_idxs],
