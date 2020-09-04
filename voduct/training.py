@@ -139,9 +139,9 @@ def train(hyps, verbose=True):
                 whr = torch.where(y[0]==mask_idx)[0]
                 endx = y.shape[-1] if len(whr) == 0 else whr[0].item()
                 print("y:",[idx2word[a.item()] for a in y[0,:endx]])
-                print("t:", [idx2word[a.item()] for a in targs[0,:endx]])
+                print("t:", [idx2word[a.item()] for a in targs[0,:endx-1]])
                 ms = torch.argmax(preds,dim=-1)
-                print("p:", [idx2word[a.item()] for a in ms[0,:endx]])
+                print("p:", [idx2word[a.item()] for a in ms[0,:endx-1]])
                 del ms
             targs = targs.reshape(-1)
 
@@ -239,7 +239,7 @@ def train(hyps, verbose=True):
             stats_string = stats_string.format(mask_train_loss,
                                                mask_train_acc)
         elif model.transformer_type==models.DICTIONARY:
-            stats_string+="Emb Loss:{:.5f}\n"
+            stats_string+="Train Emb Loss:{:.5f}\n"
             stats_string = stats_string.format(train_emb_loss)
         model.eval()
         avg_loss = 0
@@ -382,6 +382,9 @@ def train(hyps, verbose=True):
         if hyps['masking_task']:
             stats_string+="Val Mask Loss:{:.5f} | Val Mask Acc:{:.5f}\n"
             stats_string=stats_string.format(mask_avg_loss,mask_avg_acc)
+        elif model.transformer_type==models.DICTIONARY:
+            stats_string+="Val Emb Loss:{:.5f}\n"
+            stats_string = stats_string.format(val_emb_loss)
         if words is not None:
             stats_string += "Word: " + word_samp + "\n"
         stats_string += "Quest: " + question + "\n"
