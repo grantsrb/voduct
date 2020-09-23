@@ -417,6 +417,8 @@ def train(hyps, verbose=True):
                                 del_prev_sd=hyps['del_prev_sd'])
         stats_string += "Exec time: {}\n".format(time.time()-starttime)
         print(stats_string)
+        s = "Epoch:{} | Model:{}\n".format(epoch, hyps['save_folder'])
+        stats_string = s + stats_string
         log_file = os.path.join(hyps['save_folder'],"training_log.txt")
         with open(log_file,'a') as f:
             f.write(str(stats_string)+'\n')
