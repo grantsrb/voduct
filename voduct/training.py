@@ -189,16 +189,16 @@ def train(hyps, verbose=True):
                 optimizer.zero_grad()
 
             with torch.no_grad():
-                preds = torch.argmax(preds,dim=-1).reshape(og_shape)
-                targs = targs.reshape(og_shape)
+                preds = torch.argmax(preds,dim=-1)
                 sl = og_shape[-1]
                 if not hyps['masking_task']:
-                    preds[~bitmask.reshape(og_shape)] = mask_idx
                     eq = (preds==targs).float()
+                    indy_acc = eq[bitmask].mean()
+                    eq[~bitmask] = 1
+                    eq = eq.reshape(og_shape)
                     acc = (eq.sum(-1)==sl).float().mean()
-                    indy_acc = eq.reshape(-1)[bitmask.reshape(-1)].mean()
                 else:
-                    eq = (preds==targs).float()
+                    eq = (preds==targs).float().reshape(og_shape)
                     acc = (eq.sum(-1)==sl).float().mean()
                     indy_acc = eq.mean()
                 preds = preds.cpu()
@@ -308,16 +308,16 @@ def train(hyps, verbose=True):
                     loss = lossfxn(preds[bitmask], targs[bitmask])
                 else:
                     loss = lossfxn(preds,targs)
-                preds = torch.argmax(preds,dim=-1).reshape(og_shape)
-                targs = targs.reshape(og_shape)
+                preds = torch.argmax(preds,dim=-1)
                 sl = og_shape[-1]
                 if not hyps['masking_task']:
-                    preds[~bitmask.reshape(og_shape)] = mask_idx
                     eq = (preds==targs).float()
+                    indy_acc = eq[bitmask].mean()
+                    eq[~bitmask] = 1
+                    eq = eq.reshape(og_shape)
                     acc = (eq.sum(-1)==sl).float().mean()
-                    indy_acc = eq.reshape(-1)[bitmask.reshape(-1)].mean()
                 else:
-                    eq = (preds==targs).float()
+                    eq = (preds==targs).float().reshape(og_shape)
                     acc = (eq.sum(-1)==sl).float().mean()
                     indy_acc = eq.mean()
                 preds = preds.cpu()
