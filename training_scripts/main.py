@@ -62,8 +62,11 @@ if __name__ == "__main__":
             print(s)
             i,_,_ = select.select([sys.stdin], [],[],sleep_time)
             if i and "y" in sys.stdin.readline().strip().lower():
-                path = os.path.join(main_path, dirs[-1])
-                shutil.rmtree(path, ignore_errors=True)
+                print("Are you sure?? This will delete the data (Y/n)")
+                i,_,_ = select.select([sys.stdin], [],[],sleep_time)
+                if i and "n" not in sys.stdin.readline().strip().lower():
+                    path = os.path.join(main_path, dirs[-1])
+                    shutil.rmtree(path, ignore_errors=True)
         else:
             s = "You have {} seconds to cancel experiment name {}:"
             print(s.format(sleep_time, hyps['exp_name']))
