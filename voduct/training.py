@@ -328,8 +328,8 @@ def train(hyps, verbose=True):
                     whr = torch.where(question==mask_idx)[0]
                     endx=len(question) if len(whr)==0 else whr[0].item()
                     question = question[:endx]
-                    pred_samp = preds[rand]
-                    targ_samp = targs[rand]
+                    pred_samp = preds.reshape(og_shape)[rand]
+                    targ_samp = targs.reshape(og_shape)[rand]
                     whr = torch.where(targ_samp==mask_idx)[0]
                     endx=len(targ_samp) if len(whr)==0 else whr[0].item()
                     targ_samp = targ_samp[:endx]
