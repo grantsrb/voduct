@@ -19,6 +19,12 @@ import voduct.models as models
 import voduct.save_io as io
 
 def try_key(d, key, val):
+    """
+    d: dict
+    key: str
+    val: object
+        the default value if the key does not exist in d
+    """
     if key in d:
         return d[key]
     return val
@@ -70,6 +76,13 @@ def train(hyps, verbose=True):
     model.to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=hyps['lr'],
                                            weight_decay=hyps['l2'])
+    init_checkpt = try_key(hyps,"init_checkpt", None)
+    if init_checkpt is not None and init_checkpt != "":
+        if verbose:
+            print("Loading state dicts from", init_checkpt)
+        checkpt = io.load_checkpoint(init_checkpt)
+        model.load_state_dict(checkpt["state_dict"])
+        optimizer.load_state_dict(checkpt["optim_dict"])
     lossfxn = nn.CrossEntropyLoss()
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.5,
                                                     patience=6,
