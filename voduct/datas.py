@@ -10,23 +10,8 @@ import tokenizer as tk
 import voduct.models as vomods
 import voduct.utils as utils
 import random
+from ml_utils.utils import get_max_key, rand_sample
 
-
-
-def rand_sample(arr, n_samples=1):
-    """
-    Randomly samples a single element from the argued array.
-
-    arr: sequence of some sort
-    """
-    if not isinstance(arr,list): arr = list(arr)
-    if len(arr) == 0: print("len 0:", arr)
-    samples = []
-    perm = np.random.permutation(len(arr))
-    for i in range(n_samples):
-        samples.append(arr[perm[i]])
-    if len(samples) == 1: return samples[0]
-    return samples
 
 class WordProblems(Dataset):
     def __init__(self, difficulty="easy", lowercase=True,
@@ -855,23 +840,6 @@ class WordProblems(Dataset):
                 samples.add((q,ans))
         return samples
 
-def get_max_key(d):
-    """
-    Returns key corresponding to maxium value
-
-    d: dict
-        keys: object
-        vals: int or float
-    """
-    max_v = -np.inf
-    max_k = None
-    for k,v in d.items():
-        if v > max_v:
-            max_v = v
-            max_k = k
-    return max_k
-
-
 class Journal(Dataset):
     def __init__(self, seq_len=10):
         file_name = "dataset.p"
@@ -1173,17 +1141,6 @@ class WebstersDictionary(Dataset):
         return len(self.X)
 
     def __getitem__(self,idx):
-        return self.X[idx], self.Y[idx]
-
-class EmptyDataset(Dataset):
-    def __init__(self, X, Y):
-        self.X = X
-        self.Y = Y
-
-    def __len__(self):
-        return len(self.X)
-
-    def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
 
 class TextFile(Dataset):

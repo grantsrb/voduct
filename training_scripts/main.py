@@ -1,6 +1,8 @@
 import os
 import sys
 import voduct as vo
+from ml_utils.utils import load_json
+import ml_utils
 import torch
 import numpy as np
 import shutil
@@ -16,13 +18,13 @@ else:
 torch.autograd.set_detect_anomaly(True)
 
 if __name__ == "__main__":
-    hyps = vo.utils.load_json(sys.argv[1])
+    hyps = load_json(sys.argv[1])
     print()
     print("Using hyperparams file:", sys.argv[1])
     if len(sys.argv) < 3:
         ranges = {"lr": [hyps['lr']]}
     else:
-        ranges = vo.utils.load_json(sys.argv[2])
+        ranges = load_json(sys.argv[2])
         print("Using hyperranges file:", sys.argv[2])
     print()
 
@@ -79,6 +81,7 @@ if __name__ == "__main__":
 
     keys = list(ranges.keys())
     start_time = time.time()
-    vo.training.hyper_search(hyps,ranges)
+    train_fxn = vo.training.train
+    ml_utils.training.hyper_search(hyps, ranges, train_fxn)
     print("Total Execution Time:", time.time() - start_time)
 
